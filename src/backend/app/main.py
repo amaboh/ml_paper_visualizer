@@ -4,6 +4,15 @@ from fastapi.responses import JSONResponse
 import uvicorn
 import os
 from dotenv import load_dotenv
+import logging
+from app.utils.ai_processor import AIProcessor
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -24,6 +33,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize the AIProcessor singleton early
+ai_processor = AIProcessor()
+logger.info("AIProcessor singleton initialized")
+
 # Root endpoint
 @app.get("/")
 async def root():
@@ -33,6 +46,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+# Shutdown event handler
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Application shutting down - cleaning up resources")
+    # Close the AIProcessor client
+    await ai_processor.close()
+    logger.info("AIProcessor resources cleaned up")
 
 # Import and include routers
 from app.routers import papers, workflow, visualization

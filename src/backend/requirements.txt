@@ -6,6 +6,7 @@ aiofiles==23.2.1
 requests==2.31.0
 python-dotenv==1.0.0
 openai==1.11.0
+httpx==0.24.1
 PyMuPDF==1.22.3
 tenacity==8.2.3
 cryptography==42.0.2

@@ -15,6 +15,7 @@ class VisualizationGenerator:
         """
         Initialize the visualization generator
         """
+        # We're using the AIProcessor singleton, no parameters needed
         self.ai_processor = AIProcessor()
     
     async def create_visualization(
@@ -37,6 +38,7 @@ class VisualizationGenerator:
             components_data = []
             for component in components:
                 component_data = {
+                    "id": component.id,  # Make sure id is included
                     "type": component.type,
                     "name": component.name,
                     "description": component.description,
@@ -203,7 +205,7 @@ class VisualizationGenerator:
             logger.error(f"Error generating D3 data: {str(e)}")
             return {"error": str(e)}
     
-    def create_visualization(
+    def create_complete_visualization(
         self,
         paper_id: str,
         components: List[Component],

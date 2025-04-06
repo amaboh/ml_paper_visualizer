@@ -175,7 +175,7 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
         paper.components = components
         paper.relationships = relationships
         
-        # Generate visualization
+        # Generate visualization - both use the same AIProcessor singleton
         viz_data = await viz_generator.create_visualization(
             components=components,
             relationships=relationships

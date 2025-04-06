@@ -21,6 +21,7 @@ class PaperParser:
         Args:
             ai_api_key: OpenAI API key (optional, will use environment variable if not provided)
         """
+        # Use the AIProcessor singleton - any api_key passed will be ignored after first initialization
         self.ai_processor = AIProcessor(api_key=ai_api_key)
     
     async def parse_paper(self, file_path: str, paper_id: str) -> Tuple[List[Component], List[Relationship]]:
