@@ -6,6 +6,9 @@ from app.core.models import PaperType, Section, LocationInfo
 
 logger = logging.getLogger(__name__)
 
+# Define constant for text truncation
+MAX_TEXT_LENGTH = 15000 # Adjust as needed based on model context window and desired detail
+
 PAPER_CHARACTERIZATION_PROMPT = """
 You are an expert in analyzing scientific research papers, especially ML/AI papers. Analyze this research paper and provide:
 
@@ -64,67 +67,137 @@ class PaperCharacterizationService:
         # Use the AIProcessor singleton
         self.ai_processor = AIProcessor(api_key=ai_api_key)
     
-    async def characterize_paper(self, paper_text: str) -> Dict[str, Any]:
-        """
-        Analyze paper to determine its type and map key sections.
-        
-        Args:
-            paper_text: The extracted text from the paper
-            
-        Returns:
-            dict: Paper type and sections mapping
-        """
+    def _validate_paper_type(self, paper_type_str: str) -> PaperType:
+        """Validate and convert paper type string to enum."""
         try:
-            # Truncate text if needed to fit within model context limits
-            max_chars = 15000
-            truncated_text = paper_text[:max_chars] if len(paper_text) > max_chars else paper_text
-            
-            # Process with AI
-            response = await self.ai_processor.process_with_prompt(
-                prompt=PAPER_CHARACTERIZATION_PROMPT,
-                content=truncated_text,
-                output_format="json"
+            return PaperType(paper_type_str.lower())
+        except (ValueError, AttributeError):
+            logger.warning(f"Invalid paper type {paper_type_str}, falling back to UNKNOWN")
+            return PaperType.UNKNOWN
+
+    def _validate_section(self, section_data: Dict[str, Any]) -> Optional[Section]:
+        """Validate and create a section with proper error handling."""
+        try:
+            required_fields = ['name', 'title']
+            for field in required_fields:
+                if not section_data.get(field):
+                    logger.warning(f"Missing required field {field} in section data")
+                    return None
+
+            # Create location info with validation
+            start_location = LocationInfo(
+                page=section_data.get('start_location', {}).get('page'),
+                paragraph=section_data.get('start_location', {}).get('paragraph'),
+                position=section_data.get('start_location', {}).get('position')
             )
             
-            # Validate the result
-            if not isinstance(response, dict):
-                logger.error("Invalid response format from AI processor")
-                return self._create_default_characterization()
-            
-            if "error" in response:
-                logger.error(f"Error from AI processor: {response['error']}")
-                return self._create_default_characterization()
-            
-            # Validate paper type
-            paper_type = response.get("paper_type", "UNKNOWN")
+            end_location = LocationInfo(
+                page=section_data.get('end_location', {}).get('page'),
+                paragraph=section_data.get('end_location', {}).get('paragraph'),
+                position=section_data.get('end_location', {}).get('position')
+            )
+
+            return Section(
+                name=section_data['name'],
+                title=section_data['title'],
+                start_location=start_location,
+                end_location=end_location,
+                summary=section_data.get('summary', ''),
+                text=section_data.get('text')
+            )
+        except Exception as e:
+            logger.error(f"Error creating section: {e}")
+            return None
+
+    async def characterize_paper(self, text: str) -> Dict[str, Any]:
+        """Characterize paper with enhanced error handling."""
+        try:
+            # Validate input
+            if not text or len(text.strip()) == 0:
+                 return {"error": "Empty text provided...", "success": False} # Added success flag
+
+            # Process with AI, forcing JSON output
+            response_str = await self.ai_processor.process_text(
+                prompt=PAPER_CHARACTERIZATION_PROMPT + text[:MAX_TEXT_LENGTH], 
+                force_json=True # Request JSON output format
+            )
+
             try:
-                # Ensure it's a valid enum value
-                paper_type = PaperType(paper_type.lower())
-            except ValueError:
-                logger.warning(f"Invalid paper type '{paper_type}', defaulting to UNKNOWN")
-                paper_type = PaperType.UNKNOWN
+                # First attempt: Direct JSON parsing
+                result = json.loads(response_str)
+                if isinstance(result, dict) and "error" in result:
+                     # Handle potential error returned from AIProcessor
+                     logger.error(f"AI processor returned an error: {result['error']}")
+                     return {**result, "success": False}
+                     
+            except json.JSONDecodeError as e1:
+                logger.warning(f"Direct JSON parsing failed ({e1}). Trying markdown extraction...")
+                # Second attempt: Extract from markdown code block
+                import re
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_str, re.MULTILINE)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(1))
+                        logger.info("Successfully parsed JSON extracted from markdown block.")
+                    except json.JSONDecodeError as e2:
+                        logger.error(f"Failed to parse extracted JSON: {e2}")
+                        return {
+                            "error": "Failed to parse extracted JSON content",
+                            "raw_response": response_str,
+                            "success": False
+                        }
+                else:
+                    # Failed both direct and markdown parsing
+                    logger.error(f"Failed to parse AI response as JSON (Direct & Markdown): {response_str[:500]}...")
+                    return {
+                        "error": "Failed to parse paper characterization response (Not valid JSON)",
+                        "raw_response": response_str, 
+                        "success": False
+                    }
             
-            # Process sections
-            processed_sections = {}
-            sections_data = response.get("sections", {})
+            # Ensure result is a dictionary before proceeding
+            if not isinstance(result, dict):
+                 logger.error(f"Parsed result is not a dictionary: {type(result)}")
+                 return {
+                      "error": "Parsed AI response was not a valid dictionary structure.",
+                      "success": False
+                 }
+
+            # Validate paper type
+            paper_type = self._validate_paper_type(result.get('paper_type', 'unknown'))
+
+            # Validate and process sections (using existing _validate_section helper)
+            sections = {}
+            raw_sections_map = result.get('sections', {}) # Expecting dict {name: {details}} now
             
-            for section_name, section_data in sections_data.items():
+            if not isinstance(raw_sections_map, dict):
+                logger.error("Invalid sections format in AI response (expected dict)")
+                raw_sections_map = {}
+
+            for section_name, section_data in raw_sections_map.items():
                 if not isinstance(section_data, dict):
                     continue
-                    
-                processed_sections[section_name] = {
-                    "title": section_data.get("title", section_name),
-                    "summary": section_data.get("summary", "")
-                }
-            
+                # Add the standardized name to the data before validation
+                section_data['name'] = section_name 
+                section = self._validate_section(section_data)
+                if section:
+                    sections[section.name] = section # Use validated name as key
+
             return {
                 "paper_type": paper_type,
-                "sections": processed_sections
+                "sections": sections,
+                "confidence": result.get('confidence', 0.0),
+                "success": True # Indicate success
             }
-            
+
         except Exception as e:
-            logger.error(f"Error characterizing paper: {str(e)}")
-            return self._create_default_characterization()
+            logger.error(f"Error in paper characterization: {e}", exc_info=True)
+            return {
+                "error": f"Paper characterization failed: {str(e)}",
+                "paper_type": PaperType.UNKNOWN,
+                "sections": {},
+                "success": False
+            }
     
     def _create_default_characterization(self) -> Dict[str, Any]:
         """
@@ -145,57 +218,66 @@ class PaperCharacterizationService:
         }
     
     def map_sections_to_extracted_structure(
-        self, 
-        characterization_result: Dict[str, Any], 
+        self,
+        characterization_result: Dict[str, Any],
         extracted_sections: List[Dict[str, Any]]
     ) -> Dict[str, Section]:
-        """
-        Maps AI-identified sections to the extracted structure from the PDF
-        
-        Args:
-            characterization_result: Result from characterize_paper
-            extracted_sections: Sections extracted from PDF structure
+        """Map AI-identified sections to extracted structure with validation."""
+        try:
+            mapped_sections = {}
+            ai_sections = characterization_result.get('sections', {})
+
+            for section_name, ai_section in ai_sections.items():
+                # Find best matching extracted section
+                best_match = None
+                best_score = 0
+
+                for extracted in extracted_sections:
+                    if not isinstance(extracted, dict):
+                        continue
+
+                    # Calculate similarity score
+                    score = self._calculate_section_similarity(
+                        ai_section.title,
+                        extracted.get('title', '')
+                    )
+
+                    if score > best_score and score > 0.7:  # Minimum similarity threshold
+                        best_score = score
+                        best_match = extracted
+
+                if best_match:
+                    # Update AI section with extracted information
+                    mapped_section = self._validate_section({
+                        **ai_section.dict(),
+                        'start_location': best_match.get('start_location', {}),
+                        'end_location': best_match.get('end_location', {}),
+                        'text': best_match.get('text', '')
+                    })
+                    
+                    if mapped_section:
+                        mapped_sections[section_name] = mapped_section
+
+            return mapped_sections
+
+        except Exception as e:
+            logger.error(f"Error mapping sections: {e}")
+            return characterization_result.get('sections', {})
+
+    def _calculate_section_similarity(self, title1: str, title2: str) -> float:
+        """Calculate similarity between section titles."""
+        try:
+            # Simple case-insensitive comparison
+            t1 = title1.lower().strip()
+            t2 = title2.lower().strip()
             
-        Returns:
-            Dict[str, Section]: Mapped sections with start/end locations
-        """
-        ai_sections = characterization_result.get("sections", {})
-        mapped_sections = {}
-        
-        # Try to map each AI-identified section to an extracted section
-        for section_name, section_data in ai_sections.items():
-            original_title = section_data.get("title", "")
+            if t1 == t2:
+                return 1.0
             
-            # Look for a matching extracted section
-            matched_section = None
-            for extracted in extracted_sections:
-                extracted_title = extracted.get("title", "").lower()
-                
-                # Check for match (exact or fuzzy)
-                if (original_title.lower() in extracted_title or 
-                    section_name.lower() in extracted_title or
-                    any(kw in extracted_title for kw in section_name.lower().split())):
-                    matched_section = extracted
-                    break
+            # TODO: Implement more sophisticated similarity calculation if needed
+            # For now, return 0 if not exact match
+            return 0.0
             
-            # If we found a match, create a proper Section model
-            if matched_section:
-                start_location = LocationInfo(
-                    page=matched_section.get("start_location", {}).get("page", 0),
-                    position=matched_section.get("start_location", {}).get("position", 0)
-                )
-                
-                end_location = LocationInfo(
-                    page=matched_section.get("end_location", {}).get("page", 0),
-                    position=matched_section.get("end_location", {}).get("position", 0)
-                )
-                
-                mapped_sections[section_name] = Section(
-                    name=section_name,
-                    title=original_title,
-                    start_location=start_location,
-                    end_location=end_location,
-                    summary=section_data.get("summary", "")
-                )
-        
-        return mapped_sections 
+        except Exception as e:
+            logger.error(f"Error calculating section similarity: {e}")
+            return 0.0 

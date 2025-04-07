@@ -1,6 +1,6 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Response, status
 from fastapi.responses import JSONResponse
-from typing import Optional
+from typing import Optional, Dict, Any
 import uuid
 import os
 import tempfile
@@ -8,87 +8,140 @@ import aiofiles
 import logging
 
 from app.core.models import Paper, PaperStatus, PaperResponse, PaperUpload, PaperDatabase, Component, ComponentType, Relationship, Visualization
+from app.services.paper_service import PaperService, process_paper as process_paper_pipeline
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-@router.post("/upload", response_model=PaperResponse)
+# --- Define Background Task Function --- 
+# Moved processing logic into a separate function to be run in the background
+async def run_paper_processing(temp_file_path: str, paper_id: str, extractor_type: str):
+    """Helper function to run the actual paper processing in the background."""
+    logger.info(f"Background task started for paper {paper_id} at path {temp_file_path}")
+    paper = PaperDatabase.get_paper(paper_id)
+    if not paper:
+         # This should ideally not happen if called right after creation
+         logger.error(f"Background task could not find paper {paper_id} in DB.")
+         # How to signal this failure? For now, log it.
+         # Consider adding a FAILED state if paper is missing.
+         return
+         
+    # Ensure the paper object is up-to-date before processing
+    paper.status = PaperStatus.PROCESSING
+    PaperDatabase.update_paper(paper)
+    
+    try:
+        # Call the imported process_paper function from paper_service.py
+        success = await process_paper_pipeline(paper, temp_file_path)
+        
+        # Explicitly update the paper status to COMPLETED if successful
+        if success:
+            paper.status = PaperStatus.COMPLETED
+            PaperDatabase.update_paper(paper)
+        else:
+            # If process_paper_pipeline returned False, ensure paper status is FAILED
+            paper.status = PaperStatus.FAILED
+            if not hasattr(paper, 'error') or not paper.error:
+                paper.error = "Paper processing failed without specific error"
+            PaperDatabase.update_paper(paper)
+                
+        logger.info(f"Background task finished for paper {paper_id}. Final status: {paper.status}")
+    except Exception as e:
+         # Log critical errors in the background task itself
+         logger.exception(f"Critical error in background task for paper {paper_id}: {e}")
+         # Update paper status to reflect the background task failure
+         paper.status = PaperStatus.FAILED # Or ERROR
+         paper.error = f"Background processing task failed: {str(e)}"
+         paper.error_details = {"type": "BACKGROUND_TASK_CRASH"}
+         PaperDatabase.update_paper(paper)
+    finally:
+        # Clean up the temporary file after processing is done (or failed)
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"Successfully deleted temp file: {temp_file_path}")
+            except OSError as e:
+                 logger.error(f"Error deleting temp file {temp_file_path}: {e}")
+
+# --- Refactor Upload Endpoint --- 
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=Dict[str, Any])
 async def upload_paper(
     background_tasks: BackgroundTasks,
-    file: Optional[UploadFile] = File(None),
-    url: Optional[str] = Form(None)
+    response: Response, # Inject Response object to set headers
+    file: UploadFile = File(...),
+    extractor_type: str = Form("pymupdf")
 ):
     """
-    Upload a paper file or provide a URL to a paper
+    Accepts paper upload, saves it, schedules background processing, and returns immediately.
+    
+    Args:
+        background_tasks: FastAPI background tasks dependency.
+        response: FastAPI response object.
+        file: The PDF file to upload.
+        extractor_type: The type of PDF extractor ('pymupdf' or 'mistral_ocr').
     """
-    if file is None and url is None:
-        raise HTTPException(status_code=400, detail="Either file or URL must be provided")
+    if extractor_type not in ["pymupdf", "mistral_ocr"]:
+        raise HTTPException(status_code=400, detail=f"Invalid extractor type: {extractor_type}. Must be 'pymupdf' or 'mistral_ocr'")
     
     paper_id = str(uuid.uuid4())
+    temp_file_path = None
     
-    if file:
-        # Create a new paper record
+    try:
+        # 1. Save the uploaded file to a temporary location
+        # Use a secure temp directory if possible
+        temp_dir = tempfile.gettempdir()
+        safe_filename = f"paper_{paper_id}.pdf" # Avoid using raw filename
+        temp_file_path = os.path.join(temp_dir, safe_filename)
+
+        async with aiofiles.open(temp_file_path, 'wb') as out_file:
+            content = await file.read()
+            if not content:
+                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            await out_file.write(content)
+        logger.info(f"Saved uploaded file for {paper_id} to {temp_file_path}")
+
+        # 2. Create initial Paper record in DB
         paper = Paper(
             id=paper_id,
-            status=PaperStatus.UPLOADED,
-            title=file.filename
+            status=PaperStatus.PENDING,
+            title=file.filename or "Untitled Paper", # Use original filename for initial title
+            diagnostics={"parser_used": extractor_type} # Store extractor choice early
         )
-        
-        # Save paper to database
         PaperDatabase.add_paper(paper)
-        
-        # Import here to avoid circular imports
-        from app.services.paper_service import process_paper_file, process_paper_path
-        
-        try:
-            # Create a temporary file to store the uploaded PDF
-            temp_path = None
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                temp_path = temp_file.name
-                
-                # Save the uploaded file to the temporary location
-                content = await file.read()
-                with open(temp_path, 'wb') as out_file:
-                    out_file.write(content)
-            
-            # Process the file in the background, passing the file path instead of the UploadFile
-            background_tasks.add_task(process_paper_path, paper, temp_path)
-            
-            return PaperResponse(
-                id=paper.id,
-                title=paper.title,
-                status=paper.status,
-                message="Paper upload received and processing started"
-            )
-        except Exception as e:
-            logger.error(f"Error saving uploaded file: {str(e)}")
-            paper.status = PaperStatus.FAILED
-            PaperDatabase.update_paper(paper)
-            raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
-    
-    elif url:
-        # Create a new paper record
-        paper = Paper(
-            id=paper_id,
-            status=PaperStatus.UPLOADED,
-            url=url
+        logger.info(f"Created initial PENDING paper record for {paper_id}")
+
+        # 3. Add the processing task to the background
+        background_tasks.add_task(
+            run_paper_processing, 
+            temp_file_path=temp_file_path, 
+            paper_id=paper_id, 
+            extractor_type=extractor_type
         )
+        logger.info(f"Scheduled background processing for paper {paper_id}")
+
+        # 4. Return 202 Accepted immediately
+        results_url = f"/api/papers/{paper_id}" # URL to check status/results
+        response.headers["Location"] = results_url # Set Location header
         
-        # Save paper to database
-        PaperDatabase.add_paper(paper)
-        
-        # Import here to avoid circular imports
-        from app.services.paper_service import process_paper_url
-        
-        # Process the URL in the background
-        background_tasks.add_task(process_paper_url, paper, url)
-        
-        return PaperResponse(
-            id=paper.id,
-            title=None,
-            status=paper.status,
-            message="Paper URL received and processing started"
-        )
+        return {
+            "paper_id": paper.id,
+            "status": paper.status.value, # Return PENDING
+            "title": paper.title,
+            "message": "Paper upload accepted, processing started in background.",
+            "results_url": results_url
+        }
+
+    except HTTPException as http_exc:
+         # Re-raise HTTPExceptions to let FastAPI handle them
+         raise http_exc
+    except Exception as e:
+        logger.exception(f"Error during initial paper upload for {paper_id}: {e}")
+        # Clean up temp file if created before error
+        if temp_file_path and os.path.exists(temp_file_path):
+            try: os.unlink(temp_file_path) 
+            except OSError: pass
+        # Return a 500 error for unexpected issues during upload/scheduling phase
+        raise HTTPException(status_code=500, detail=f"Internal server error during upload initiation: {str(e)}")
 
 @router.get("/{paper_id}", response_model=PaperResponse)
 async def get_paper(paper_id: str):
@@ -109,12 +162,35 @@ async def get_paper(paper_id: str):
     # Get basic section names if available
     section_names = list(paper.sections.keys()) if paper.sections else []
     
+    # For failed papers, include diagnostics information
+    diagnostics = None
+    error_message = None
+    error_details = None
+    
+    if paper.status == PaperStatus.FAILED or paper.status == PaperStatus.ERROR:
+        # Check if paper has diagnostics information
+        if hasattr(paper, 'diagnostics'):
+            diagnostics = paper.diagnostics
+        
+        # Get error message from processing attempt
+        if hasattr(paper, 'error'):
+            error_message = paper.error
+        elif hasattr(paper, 'details') and isinstance(paper.details, dict) and 'error' in paper.details:
+            error_message = paper.details['error']
+            
+        # Get error details
+        if hasattr(paper, 'error_details'):
+            error_details = paper.error_details
+    
     return PaperResponse(
         id=paper.id,
         title=paper.title,
         status=paper.status,
         paper_type=paper.paper_type,
-        sections=section_names
+        sections=section_names,
+        diagnostics=diagnostics,
+        error_message=error_message,
+        error_details=error_details
     )
 
 @router.get("/{paper_id}/sections")
@@ -167,11 +243,25 @@ async def get_paper_status(paper_id: str):
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
+    # For error or failed papers, include error details
+    error_message = None
+    error_details = None
+    
+    # Check for both ERROR and FAILED status
+    if paper.status == PaperStatus.ERROR or paper.status == PaperStatus.FAILED:
+        if hasattr(paper, 'error'):
+            error_message = paper.error
+        
+        if hasattr(paper, 'error_details'):
+            error_details = paper.error_details
+    
     return PaperResponse(
         id=paper.id,
         title=paper.title,
         status=paper.status,
-        message=f"Paper status: {paper.status}"
+        message=f"Paper status: {paper.status.value}", # Use .value for enum string
+        error_message=error_message,
+        error_details=error_details
     )
 
 @router.post("/test/create-sample", response_model=PaperResponse)

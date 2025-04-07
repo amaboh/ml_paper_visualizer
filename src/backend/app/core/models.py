@@ -5,10 +5,12 @@ from datetime import datetime
 import uuid
 
 class PaperStatus(str, Enum):
-    UPLOADED = "uploaded"
+    PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
-    FAILED = "failed"
+    COMPLETED_MINIMAL = "completed_minimal"  # New status for minimal component extraction
+    ERROR = "error"
+    FAILED = "failed"  # Added missing status for terminal failure
 
 class PaperType(str, Enum):
     NEW_ARCHITECTURE = "new_architecture"
@@ -18,19 +20,18 @@ class PaperType(str, Enum):
     UNKNOWN = "unknown"
 
 class ComponentType(str, Enum):
-    DATA_COLLECTION = "data_collection"
+    DATASET = "dataset"
     PREPROCESSING = "preprocessing"
-    DATA_PARTITION = "data_partition"
     MODEL = "model"
     TRAINING = "training"
     EVALUATION = "evaluation"
     RESULTS = "results"
+    OTHER = "other"
     # Extended component types for more detailed model architecture representation
     LAYER = "layer"
     MODULE = "module"
     HYPERPARAMETER = "hyperparameter"
     ALGORITHM = "algorithm"
-    DATASET = "dataset"
     METRIC = "metric"
 
 class LocationInfo(BaseModel):
@@ -75,29 +76,41 @@ class Visualization(BaseModel):
     component_mapping: Dict[str, str] = {}
 
 class Paper(BaseModel):
+    """
+    Represents a research paper
+    """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: Optional[str] = None
     url: Optional[str] = None
-    status: PaperStatus = PaperStatus.UPLOADED
+    status: PaperStatus = PaperStatus.PENDING
     uploaded_at: datetime = Field(default_factory=datetime.now)
     paper_type: Optional[PaperType] = None
-    sections: Dict[str, Section] = {}
-    components: List[Component] = []
-    relationships: List[Relationship] = []
+    sections: Dict[str, Section] = Field(default_factory=dict)
+    components: List[Component] = Field(default_factory=list)
+    relationships: List[Relationship] = Field(default_factory=list)
+    details: Dict[str, Any] = Field(default_factory=dict)
     visualization: Optional[Visualization] = None
-    details: Dict[str, Any] = {}  # Store additional metadata
+    error: Optional[str] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+    error_details: Optional[Dict[str, Any]] = None
 
 class PaperUpload(BaseModel):
     file: Optional[bytes] = None
     url: Optional[str] = None
 
 class PaperResponse(BaseModel):
+    """
+    Response model for paper information
+    """
     id: str
     title: Optional[str] = None
     status: PaperStatus
-    message: Optional[str] = None
     paper_type: Optional[PaperType] = None
     sections: Optional[List[str]] = None
+    message: Optional[str] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
 
 class WorkflowResponse(BaseModel):
     paper_id: str

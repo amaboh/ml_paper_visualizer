@@ -13,6 +13,21 @@ import {
 import { FileUploadIcon, LinkIcon, ArrowRightIcon } from "../components/icons";
 import { useRouter } from "next/navigation";
 
+// Define parser options
+const parserOptions = [
+  {
+    id: "pymupdf",
+    label: "PyMuPDF (Standard)",
+    description: "Fast, local PDF text extraction.",
+  },
+  {
+    id: "mistral_ocr",
+    label: "Mistral OCR (Advanced)",
+    description:
+      "Cloud-based OCR for complex layouts/scans (requires API key).",
+  },
+];
+
 export default function Home(): React.ReactNode {
   const router = useRouter();
   const [loading, setLoading] = useState<boolean>(false);
@@ -21,6 +36,9 @@ export default function Home(): React.ReactNode {
   const [activeTab, setActiveTab] = useState<string>("upload");
   const [createSampleLoading, setCreateSampleLoading] =
     useState<boolean>(false);
+  const [selectedParser, setSelectedParser] = useState<string>(
+    parserOptions[0].id
+  );
 
   const handleFileUpload = async (file: File): Promise<void> => {
     setLoading(true);
@@ -30,6 +48,7 @@ export default function Home(): React.ReactNode {
       // Create form data
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("extractor_type", selectedParser);
 
       // Send to backend API
       const response = await fetch("/api/papers/upload", {
@@ -38,13 +57,25 @@ export default function Home(): React.ReactNode {
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed: ${response.statusText}`);
+        let errorDetail = `Upload failed: ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData && errorData.detail) {
+            errorDetail = `Upload failed: ${errorData.detail}`;
+          }
+        } catch {
+          // Ignore if response is not JSON
+        }
+        throw new Error(errorDetail);
       }
 
       const data = await response.json();
 
-      // Redirect to results page with the actual paper ID
-      router.push(`/results/${data.id}`);
+      if (data.paper_id) {
+        router.push(`/results/${data.paper_id}`);
+      } else {
+        throw new Error("Processing started, but no paper ID received.");
+      }
     } catch (err) {
       setError(
         `Error uploading file: ${
@@ -70,24 +101,35 @@ export default function Home(): React.ReactNode {
     setError("");
 
     try {
-      // Create form data
       const formData = new FormData();
       formData.append("url", url);
+      formData.append("extractor_type", selectedParser);
 
-      // Send to backend API
       const response = await fetch("/api/papers/upload", {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(`Processing URL failed: ${response.statusText}`);
+        let errorDetail = `Processing URL failed: ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          if (errorData && errorData.detail) {
+            errorDetail = `Processing URL failed: ${errorData.detail}`;
+          }
+        } catch {
+          // Ignore if response is not JSON
+        }
+        throw new Error(errorDetail);
       }
 
       const data = await response.json();
 
-      // Redirect to results page with the actual paper ID
-      router.push(`/results/${data.id}`);
+      if (data.paper_id) {
+        router.push(`/results/${data.paper_id}`);
+      } else {
+        throw new Error("Processing started, but no paper ID received.");
+      }
     } catch (err) {
       setError(
         `Error processing URL: ${
@@ -179,9 +221,10 @@ export default function Home(): React.ReactNode {
                       onChange={handleFileUpload}
                       disabled={loading}
                       placeholder="Drag & drop a PDF file here, or click to browse"
+                      className="mb-4"
                     />
                   ) : (
-                    <form onSubmit={handleUrlSubmit}>
+                    <form onSubmit={handleUrlSubmit} className="mb-4">
                       <Input
                         type="url"
                         value={url}
@@ -198,12 +241,48 @@ export default function Home(): React.ReactNode {
                         className="w-full"
                         rightIcon={<ArrowRightIcon />}
                       >
-                        {loading ? <Spinner size="sm" /> : "Visualize Paper"}
+                        {loading ? (
+                          <Spinner size="sm" />
+                        ) : (
+                          "Visualize Paper from URL"
+                        )}
                       </Button>
                     </form>
                   )}
 
-                  <div className="mt-4 text-center">
+                  <div className="mt-4 border-t pt-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">
+                      PDF Parsing Method:
+                    </h4>
+                    <div className="space-y-2">
+                      {parserOptions.map((option) => (
+                        <label
+                          key={option.id}
+                          className="flex items-center space-x-2 p-2 border rounded-md hover:bg-gray-50 cursor-pointer"
+                        >
+                          <input
+                            type="radio"
+                            name="parserType"
+                            value={option.id}
+                            checked={selectedParser === option.id}
+                            onChange={() => setSelectedParser(option.id)}
+                            className="form-radio h-4 w-4 text-indigo-600"
+                            disabled={loading}
+                          />
+                          <div>
+                            <span className="block text-sm font-medium text-gray-900">
+                              {option.label}
+                            </span>
+                            <span className="block text-xs text-gray-500">
+                              {option.description}
+                            </span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 text-center border-t pt-6">
                     <Button
                       onClick={handleSamplePaper}
                       disabled={createSampleLoading}

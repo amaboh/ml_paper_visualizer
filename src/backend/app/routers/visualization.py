@@ -135,22 +135,78 @@ async def customize_visualization(
 
 @router.get("/{paper_id}/export", response_model=Dict[str, Any])
 async def export_visualization(
-    paper_id: str,
-    format: str = Query("svg", description="Export format (svg, png, html)")
+    paper_id: str = Path(..., description="The ID of the paper"),
+    format: str = Query("svg", description="Export format (svg, png, json)")
 ):
     """
     Export the visualization in various formats
     """
-    # This would normally generate the requested format
-    # For now, return a mock response
-    visualization = await get_visualization(paper_id)
+    paper = PaperDatabase.get_paper(paper_id)
     
-    return {
-        "paper_id": paper_id,
-        "format": format,
-        "data": visualization["diagram_data"],
-        "message": f"Visualization exported as {format}"
-    }
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    if paper.status != PaperStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail=f"Paper is not ready for visualization (status: {paper.status})")
+    
+    if format.lower() == "svg":
+        # For SVG, we can return the Mermaid diagram rendered as SVG
+        if not paper.visualization or not paper.visualization.diagram_data:
+            raise HTTPException(status_code=404, detail="Visualization data not found")
+        
+        # In a real implementation, this would convert Mermaid to SVG
+        # For now, we'll return an SVG placeholder
+        svg_data = f'''
+        <svg xmlns="http://www.w3.org/2000/svg" width="800" height="600">
+            <style>
+                text {{ font-family: Arial, sans-serif; font-size: 12px; }}
+                .title {{ font-size: 16px; font-weight: bold; }}
+            </style>
+            <text x="400" y="20" text-anchor="middle" class="title">{paper.title}</text>
+            <!-- This would be the actual SVG content generated from Mermaid -->
+        </svg>
+        '''
+        
+        return {
+            "paper_id": paper_id,
+            "format": "svg",
+            "data": svg_data,
+            "filename": f"{paper.title.replace(' ', '_')}_visualization.svg"
+        }
+    
+    elif format.lower() == "json":
+        # For JSON, return the structured data used for visualizations
+        d3_data = await get_d3_visualization(paper_id)
+        mermaid_data = await get_mermaid_visualization(paper_id)
+        
+        export_data = {
+            "paper": {
+                "id": paper.id,
+                "title": paper.title,
+                "status": paper.status,
+                "paper_type": paper.paper_type if hasattr(paper, "paper_type") else None
+            },
+            "components": [dict(comp) for comp in paper.components],
+            "relationships": [dict(rel) for rel in paper.relationships],
+            "d3_visualization": d3_data,
+            "mermaid_visualization": mermaid_data
+        }
+        
+        return {
+            "paper_id": paper_id,
+            "format": "json",
+            "data": export_data,
+            "filename": f"{paper.title.replace(' ', '_')}_data.json"
+        }
+    
+    elif format.lower() == "png":
+        # For PNG, we would need to render SVG and convert to PNG
+        # This would typically be handled by a service like Puppeteer
+        # For now, return an error indicating this is not implemented
+        raise HTTPException(status_code=501, detail="PNG export is handled client-side for now")
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported export format: {format}")
 
 @router.get("/{paper_id}/diagram")
 async def get_visualization_diagram(
@@ -249,3 +305,112 @@ async def get_component_details(
         raise HTTPException(status_code=404, detail="Component not found")
     
     return component
+
+@router.get("/{paper_id}/mermaid", response_model=Dict[str, Any])
+async def get_mermaid_visualization(
+    paper_id: str = Path(..., description="The ID of the paper")
+):
+    """
+    Get Mermaid diagram data for a paper's ML workflow
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    if paper.status != PaperStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail=f"Paper is not ready for visualization (status: {paper.status})")
+    
+    if not paper.visualization or not paper.visualization.diagram_data:
+        raise HTTPException(status_code=404, detail="Mermaid diagram data not found for this paper")
+    
+    return {
+        "diagram_data": paper.visualization.diagram_data
+    }
+
+@router.get("/{paper_id}/d3", response_model=Dict[str, Any])
+async def get_d3_visualization(
+    paper_id: str = Path(..., description="The ID of the paper")
+):
+    """
+    Get D3 visualization data for a paper's ML workflow
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    if paper.status != PaperStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail=f"Paper is not ready for visualization (status: {paper.status})")
+    
+    # Handle case where there are no components or relationships
+    if not paper.components:
+        # Return minimal D3 data with a placeholder node
+        return {
+            "nodes": [{
+                "id": "minimal_component",
+                "name": f"Paper: {paper.title if hasattr(paper, 'title') and paper.title else paper.id}",
+                "type": "other",
+                "description": "This paper's content could not be automatically parsed into specific components.",
+                "details": {
+                    "extraction_note": "Automatic extraction created minimal components only."
+                }
+            }],
+            "links": [],
+            "hierarchical_nodes": [],
+            "is_minimal": True
+        }
+    
+    # Create a copy of components to work with
+    nodes = [dict(comp) for comp in paper.components]
+    
+    # Organize nodes into a hierarchical structure
+    hierarchical_nodes = []
+    component_map = {comp["id"]: comp for comp in nodes}
+    
+    # Initialize links list
+    links = []
+    
+    # Process relationships if they exist
+    if paper.relationships:
+        # Identify potential parent-child relationships
+        for rel in paper.relationships:
+            # Check if it's a part_of or contains relationship
+            if rel.type in ["part_of", "contains", "component_of", "sub_module"]:
+                # Get the components
+                if rel.source_id in component_map and rel.target_id in component_map:
+                    # In "part_of" relationships, source is the child, target is the parent
+                    parent_comp = component_map[rel.target_id]
+                    child_comp = component_map[rel.source_id]
+                    
+                    # Add hierarchy information
+                    child_comp["parent"] = parent_comp["id"]
+                    
+                    # Initialize or add to children list
+                    if "children" not in parent_comp:
+                        parent_comp["children"] = []
+                    
+                    parent_comp["children"].append(child_comp)
+        
+        # Format links for D3
+        for rel in paper.relationships:
+            # Skip the hierarchical relationships already represented in the node structure
+            if rel.type not in ["part_of", "contains", "component_of", "sub_module"]:
+                links.append({
+                    "source": rel.source_id,
+                    "target": rel.target_id,
+                    "type": rel.type, 
+                    "description": rel.description
+                })
+    
+    # Extract top-level components (those without parents)
+    for comp_id, comp in component_map.items():
+        if "parent" not in comp:
+            hierarchical_nodes.append(comp)
+    
+    return {
+        "nodes": nodes,  # Include all nodes for reference
+        "links": links,
+        "hierarchical_nodes": hierarchical_nodes,  # Top-level nodes with children
+        "is_minimal": len(paper.components) == 1  # Flag if this is just a minimal component
+    }

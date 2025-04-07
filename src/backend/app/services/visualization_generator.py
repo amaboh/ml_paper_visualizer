@@ -73,6 +73,22 @@ class VisualizationGenerator:
             Dict[str, Any]: Mermaid diagram data
         """
         try:
+            # Handle case with no components or only a minimal component
+            if not components or (len(components) == 1 and components[0].id == "minimal_component"):
+                # Return a simple diagram indicating minimal/no data
+                minimal_name = components[0].name if components else "Paper Processing"
+                minimal_diagram = f"""flowchart TD
+    A[{minimal_name}] -.-> B(Extraction Unsuccessful or Minimal)
+    classDef minimal fill:#f9f,stroke:#333,stroke-width:2px;
+    class A,B minimal;
+"""
+                return {
+                    "diagram_type": "mermaid",
+                    "diagram_data": minimal_diagram,
+                    "component_mapping": {"A": components[0].id if components else "minimal_component"}, # Minimal mapping
+                    "is_minimal": True
+                }
+
             # Create a mapping of component types to node classes
             type_classes = {
                 ComponentType.DATA_COLLECTION: "dataCollection",
@@ -81,33 +97,38 @@ class VisualizationGenerator:
                 ComponentType.MODEL: "model",
                 ComponentType.TRAINING: "training",
                 ComponentType.EVALUATION: "evaluation",
-                ComponentType.RESULTS: "results"
+                ComponentType.RESULTS: "results",
+                ComponentType.OTHER: "other"  # Add a class for OTHER type
             }
-            
+
             # Generate node IDs
             component_ids = {}
             for i, component in enumerate(components):
                 component_ids[component.id] = chr(65 + i)  # A, B, C, ...
-            
+
             # Generate node definitions
             nodes = []
             for component in components:
-                node_id = component_ids[component.id]
-                node_name = component.name
-                nodes.append(f"{node_id}[{node_name}]")
-            
+                node_id = component_ids.get(component.id)
+                if node_id: # Ensure node_id exists
+                    node_name = component.name.replace('"', '#quot;') # Escape quotes for Mermaid
+                    nodes.append(f'{node_id}["{node_name}"]')
+
             # Generate diagram edges
             edges = []
-            for relationship in relationships:
-                if relationship.source_id in component_ids and relationship.target_id in component_ids:
-                    source_id = component_ids[relationship.source_id]
-                    target_id = component_ids[relationship.target_id]
+            if relationships: # Only generate edges if relationships exist
+                for relationship in relationships:
+                    source_node_id = component_ids.get(relationship.source_id)
+                    target_node_id = component_ids.get(relationship.target_id)
                     
-                    if relationship.type == "flow":
-                        edges.append(f"{source_id} --> {target_id}")
-                    elif relationship.type == "reference":
-                        edges.append(f"{source_id} -.-> {target_id}")
-            
+                    if source_node_id and target_node_id:
+                        if relationship.type == "flow":
+                            edges.append(f"{source_node_id} --> {target_node_id}")
+                        elif relationship.type == "reference":
+                            edges.append(f"{source_node_id} -.-> {target_node_id}")
+                        else:
+                             edges.append(f"{source_node_id} -- {relationship.type} --> {target_node_id}") # Default link
+
             # Generate class definitions and assignments
             class_defs = [
                 "classDef dataCollection fill:#10B981,stroke:#047857,color:white;",
@@ -116,46 +137,56 @@ class VisualizationGenerator:
                 "classDef model fill:#EF4444,stroke:#B91C1C,color:white;",
                 "classDef training fill:#8B5CF6,stroke:#6D28D9,color:white;",
                 "classDef evaluation fill:#EC4899,stroke:#BE185D,color:white;",
-                "classDef results fill:#0EA5E9,stroke:#0369A1,color:white;"
+                "classDef results fill:#0EA5E9,stroke:#0369A1,color:white;",
+                "classDef other fill:#9CA3AF,stroke:#4B5563,color:white;" # Style for OTHER
             ]
-            
+
             class_assignments = []
             for component in components:
-                if component.id in component_ids:
-                    node_id = component_ids[component.id]
-                    class_name = type_classes.get(component.type)
-                    if class_name:
-                        class_assignments.append(f"class {node_id} {class_name};")
-            
+                node_id = component_ids.get(component.id)
+                if node_id:
+                    class_name = type_classes.get(component.type, "other") # Default to 'other'
+                    class_assignments.append(f"class {node_id} {class_name};")
+
             # Assemble the full diagram
             node_section = "\n    ".join(nodes)
             edge_section = "\n    ".join(edges)
             class_def_section = "\n    ".join(class_defs)
             class_assignment_section = "\n    ".join(class_assignments)
-            
+
             diagram = f"""flowchart TD
     {node_section}
     {edge_section}
-    
+
     {class_def_section}
-    
+
     {class_assignment_section}
 """
-            
+
             # Map component IDs to diagram nodes
             component_mapping = {}
             for component_id, node_id in component_ids.items():
                 component_mapping[node_id] = component_id
-            
+
             return {
                 "diagram_type": "mermaid",
                 "diagram_data": diagram,
-                "component_mapping": component_mapping
+                "component_mapping": component_mapping,
+                "is_minimal": False # It's not minimal if we reached here
             }
-            
+
         except Exception as e:
             logger.error(f"Error generating Mermaid diagram: {str(e)}")
-            return {"error": str(e)}
+            # Return error or a minimal error diagram
+            error_diagram = f"""flowchart TD
+    A[Error Generating Diagram] --> B({str(e).replace('"', '')})
+"""
+            return {
+                "diagram_type": "mermaid",
+                "diagram_data": error_diagram,
+                "component_mapping": {},
+                "error": str(e)
+            }
     
     def generate_d3_data(
         self, 
@@ -196,10 +227,13 @@ class VisualizationGenerator:
                     "description": relationship.description
                 })
             
-            return {
+            d3_data = {
                 "nodes": nodes,
                 "links": links
             }
+            logger.info(f"Generated D3 data: nodes={len(nodes)}, links={len(links)}")
+            logger.debug(f"D3 Data structure: {json.dumps(d3_data, indent=2)}") # Log the actual data
+            return d3_data
             
         except Exception as e:
             logger.error(f"Error generating D3 data: {str(e)}")

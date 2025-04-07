@@ -45,9 +45,8 @@ class AIProcessor:
             logger.warning("No OpenAI API key provided. AI processing will not work.")
         else:
             try:
-                # Create a custom httpx client with no proxy settings
-                # This avoids the proxies parameter issue
-                timeout = httpx.Timeout(30.0, connect=10.0)
+                # Create a custom httpx client with increased timeout
+                timeout = httpx.Timeout(120.0, connect=10.0) # Increased overall timeout to 120 seconds
                 http_client = httpx.AsyncClient(timeout=timeout)
                 
                 # Initialize the OpenAI client with explicit settings
@@ -65,200 +64,151 @@ class AIProcessor:
         
         self._initialized = True
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def analyze_paper_structure(self, text: str) -> Dict[str, Any]:
-        """
-        Analyze the structure of a paper to identify sections
-        
-        Args:
-            text: The paper text content
-            
-        Returns:
-            Dict[str, Any]: Dictionary containing identified sections
-        """
-        if not self.api_key or not self.client:
-            return {"error": "No API key provided or client not initialized"}
-        
-        try:
-            # Truncate text if too long
-            max_length = 15000  # Adjust based on model limits
-            truncated_text = text[:max_length] if len(text) > max_length else text
-            
-            prompt = f"""
-            You are an expert in analyzing scientific papers. Analyze the following paper text and identify the key sections.
-            
-            For each section, provide:
-            1. The section title
-            2. The starting position in the text (approximate)
-            3. A brief summary of what the section contains
-            
-            Focus on identifying these key sections:
-            - Abstract
-            - Introduction
-            - Related Work
-            - Methods/Methodology
-            - Data Collection
-            - Preprocessing
-            - Model Architecture
-            - Training Process
-            - Experiments
-            - Results
-            - Discussion
-            - Conclusion
-            
-            Paper text:
-            {truncated_text}
-            
-            Respond with a JSON structure containing the identified sections. Format:
-            {{
-              "sections": [
-                {{
-                  "title": "section_name",
-                  "position": position_number,
-                  "summary": "brief_summary"
-                }},
-                ...
-              ]
-            }}
-            """
-            
-            response = await self.client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are an AI assistant that analyzes scientific papers and extracts structured information."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1000
-            )
-            
-            # Extract and parse the response
-            result_text = response.choices[0].message.content
-            
-            # Extract JSON from the response
-            try:
-                # Try to parse the entire response as JSON
-                result = json.loads(result_text)
-            except json.JSONDecodeError:
-                # If that fails, try to extract JSON from markdown code blocks
-                import re
-                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text)
-                if json_match:
-                    result = json.loads(json_match.group(1))
-                else:
-                    # If that also fails, log error and return empty structure
-                    logger.error("Failed to parse JSON from AI response")
-                    return {"sections": []}
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in AI processing: {str(e)}")
-            return {"error": str(e)}
+    # Commenting out orchestration methods - this logic belongs in the service layer.
+    # @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    # async def analyze_paper_structure(self, text: str) -> Dict[str, Any]:
+    #     ...
+    
+    # @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    # async def extract_ml_components(self, text: str, sections: Dict[str, Any]) -> Dict[str, Any]:
+    #     ...
+
+    # --- Generic AI Interaction Methods --- 
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def extract_ml_components(self, text: str, sections: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_text(self, prompt: str, model: str = "gpt-4-turbo", max_tokens: int = 4000, temperature: float = 0.2, force_json: bool = False) -> str:
         """
-        Extract ML workflow components from paper text
-        
+        Generic method to send a prompt to the AI and get a text response.
+        Handles API calls, retries, and basic error logging.
+
         Args:
-            text: The paper text content
-            sections: Dictionary of identified sections
-            
+            prompt: The complete prompt string.
+            model: The OpenAI model to use.
+            max_tokens: Maximum tokens for the response.
+            temperature: Sampling temperature.
+            force_json: If True, attempt to force JSON output using response_format.
+
         Returns:
-            Dict[str, Any]: Dictionary containing extracted ML components
+            The text content of the AI's response, or a JSON string with an error key.
         """
-        if not self.api_key or not self.client:
-            return {"error": "No API key provided or client not initialized"}
-        
+        if not self.client:
+            logger.error("AI client not initialized.")
+            return json.dumps({"error": "AI client not initialized."})
+
         try:
-            # Construct a prompt with focused excerpts from relevant sections
-            methodology_sections = [
-                s for s in sections.get("sections", [])
-                if any(kw in s.get("title", "").lower() for kw in 
-                      ["method", "model", "architecture", "data", "preprocess", "training", "experiment"])
-            ]
+            logger.debug(f"Sending prompt to {model} (force_json={force_json}, first 100 chars): {prompt[:100]}...")
             
-            # Extract relevant section texts
-            excerpts = []
-            for section in methodology_sections:
-                position = section.get("position", 0)
-                # Extract about 1000 characters from each section
-                excerpt_start = max(0, position)
-                excerpt_end = min(len(text), position + 1000)
-                excerpt = text[excerpt_start:excerpt_end]
-                excerpts.append(f"--- {section.get('title', 'Section')} ---\n{excerpt}")
-            
-            sections_text = "\n\n".join(excerpts)
-            
-            prompt = f"""
-            You are an expert in machine learning. Extract the ML workflow components from the following paper sections:
-            
-            {sections_text}
-            
-            For each component of the ML workflow, identify:
-            1. Component type (one of: data_collection, preprocessing, data_partition, model, training, evaluation, results)
-            2. Component name (short, descriptive title)
-            3. Component description (brief summary of what it does)
-            4. Details (any parameters, dimensions, or specifics mentioned)
-            5. Source section (which section this was found in)
-            
-            Respond with a JSON structure of identified components. Format:
-            {{
-              "components": [
-                {{
-                  "type": "component_type",
-                  "name": "component_name",
-                  "description": "component_description",
-                  "details": {{
-                    "param1": "value1",
-                    "param2": "value2"
-                  }},
-                  "source_section": "section_name"
-                }},
-                ...
-              ]
-            }}
-            """
+            # Set response format if JSON is forced
+            response_format_param = {"type": "json_object"} if force_json else None
             
             response = await self.client.chat.completions.create(
-                model="gpt-4",
+                model=model,
                 messages=[
-                    {"role": "system", "content": "You are an AI assistant that extracts structured ML workflow information from research papers."},
+                    {"role": "system", "content": "You are a helpful AI assistant specialized in analyzing documents."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=1500
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format_param 
             )
             
-            # Extract and parse the response
-            result_text = response.choices[0].message.content
+            logger.debug(f"Raw OpenAI Response Object: {response.model_dump_json(indent=2)}") # Log the full response object
             
-            # Extract JSON from the response
-            try:
-                # Try to parse the entire response as JSON
-                result = json.loads(result_text)
-            except json.JSONDecodeError:
-                # If that fails, try to extract JSON from markdown code blocks
-                import re
-                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text)
-                if json_match:
-                    result = json.loads(json_match.group(1))
-                else:
-                    # If that also fails, log error and return empty structure
-                    logger.error("Failed to parse JSON from AI response")
-                    return {"components": []}
+            # Enhanced error handling: ensure we extract content safely or return empty string
+            result_text = ""
+            if response and hasattr(response, 'choices') and response.choices:
+                choice = response.choices[0]
+                if hasattr(choice, 'message') and choice.message and hasattr(choice.message, 'content'):
+                    result_text = choice.message.content or ""
             
-            # Add source page info (mock for now)
-            for i, component in enumerate(result.get("components", [])):
-                component["source_page"] = i + 1
-            
-            return result
-            
+            logger.debug(f"Received response from {model} (first 100 chars): {repr(result_text[:100])}...")
+            return result_text  # Will be empty string if no content was extracted
+        
         except Exception as e:
-            logger.error(f"Error in AI processing: {str(e)}")
-            return {"error": str(e)}
-    
+            # Log the specific error BEFORE attempting to format the response
+            logger.error(f"Error during OpenAI API call in process_text: {str(e)}", exc_info=True)
+            # Ensure a valid JSON error string is returned, even if str(e) fails
+            try:
+                error_payload = {"error": f"AI API Error: {str(e)}"}
+                return json.dumps(error_payload)
+            except Exception as format_e:
+                logger.error(f"Failed to format error response in process_text: {format_e}")
+                return json.dumps({"error": "AI API Error: Failed to format details."})
+
+    # --- process_with_prompt might be redundant if process_text is flexible enough --- 
+    # --- Or it could be kept for specific structured output formats --- 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def process_with_prompt(
+        self, 
+        prompt: str, 
+        content: str, 
+        output_format: str = "text", 
+        model: str = "gpt-4-turbo",
+        max_tokens: int = 4000,
+        temperature: float = 0.2
+    ) -> Any:
+        """
+        Processes text using a specific prompt and expected output format.
+        Handles API calls, retries, and JSON parsing.
+
+        Args:
+            prompt: The instruction prompt for the AI.
+            content: The text content to be processed.
+            output_format: Expected format ('text' or 'json').
+            model: OpenAI model.
+            max_tokens: Max response tokens.
+            temperature: Sampling temperature.
+
+        Returns:
+            Processed text (str) or parsed JSON (dict/list), or dict with error key on failure.
+        """
+        if not self.client:
+            logger.error("AI client not initialized.")
+            return {"error": "AI client not initialized."}
+
+        full_prompt = f"{prompt}\n\nContent:\n{content}"
+        
+        try:
+            logger.debug(f"Sending prompt to {model} for {output_format} (first 100 chars): {full_prompt[:100]}...")
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant specialized in analyzing documents."},
+                    {"role": "user", "content": full_prompt}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                # Use response_format if requesting JSON and model supports it
+                response_format={"type": "json_object"} if output_format == "json" else None
+            )
+            
+            result_text = response.choices[0].message.content
+            logger.debug(f"Received response from {model} (first 100 chars): {result_text[:100]}...")
+
+            if output_format == "json":
+                try:
+                    # Attempt to parse the entire response as JSON
+                    return json.loads(result_text)
+                except json.JSONDecodeError:
+                    # Try extracting JSON from markdown code blocks as a fallback
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text, re.MULTILINE)
+                    if json_match:
+                        try:
+                             return json.loads(json_match.group(1))
+                        except json.JSONDecodeError as e:
+                             logger.error(f"Failed to parse extracted JSON: {e}")
+                             return {"error": f"Failed to parse extracted JSON: {e}", "raw_response": result_text}
+                    else:
+                        logger.error("AI response was not valid JSON and no markdown JSON block found.")
+                        return {"error": "AI response was not valid JSON.", "raw_response": result_text}
+            else:
+                return result_text # Return raw text
+
+        except Exception as e:
+            logger.error(f"Error interacting with OpenAI API: {str(e)}", exc_info=True)
+            return {"error": f"AI API Error: {str(e)}"}
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def generate_visualization(self, components: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -352,78 +302,6 @@ classDef default fill:#9CA3AF,stroke:#4B5563,color:white;
             
         except Exception as e:
             logger.error(f"Error generating visualization: {str(e)}")
-            return {"error": str(e)}
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def process_with_prompt(self, prompt: str, content: str, output_format: str = "text") -> Any:
-        """
-        Process content with a custom prompt
-        
-        Args:
-            prompt: The instruction prompt
-            content: Content to process
-            output_format: Expected output format (text, json)
-            
-        Returns:
-            Result in the specified format
-        """
-        if not self.api_key or not self.client:
-            return {"error": "No API key provided or client not initialized"}
-        
-        try:
-            # Truncate content if too long
-            max_length = 30000  # Adjust based on model limits
-            truncated_content = content[:max_length] if len(content) > max_length else content
-            
-            full_prompt = f"{prompt}\n\nPaper Content:\n{truncated_content}"
-            
-            # Add specific instructions for JSON output
-            if output_format == "json":
-                full_prompt += "\n\nYour response must be valid JSON. Do not include explanations outside of the JSON."
-            
-            response = await self.client.chat.completions.create(
-                model="gpt-4",  # Using GPT-4 for better accuracy
-                messages=[
-                    {"role": "system", "content": "You are an AI assistant specialized in analyzing research papers."},
-                    {"role": "user", "content": full_prompt}
-                ],
-                temperature=0.2,  # Lower temperature for more deterministic output
-                max_tokens=2000
-            )
-            
-            # Extract and process the response
-            result_text = response.choices[0].message.content
-            
-            # If JSON output is expected, try to parse it
-            if output_format == "json":
-                try:
-                    # Try to parse the entire response as JSON
-                    return json.loads(result_text)
-                except json.JSONDecodeError:
-                    # If that fails, try to extract JSON from markdown code blocks
-                    import re
-                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text)
-                    if json_match:
-                        try:
-                            return json.loads(json_match.group(1))
-                        except json.JSONDecodeError:
-                            logger.error("Failed to parse JSON from code block")
-                    
-                    # If that also fails, try to extract anything that looks like JSON
-                    json_match = re.search(r'({[\s\S]*})', result_text)
-                    if json_match:
-                        try:
-                            return json.loads(json_match.group(1))
-                        except json.JSONDecodeError:
-                            logger.error("Failed to parse JSON from brace pattern")
-                    
-                    logger.error("Failed to parse JSON from AI response")
-                    return {"error": "Failed to parse JSON response"}
-            
-            return result_text
-            
-        except Exception as e:
-            logger.error(f"Error in AI processing: {str(e)}")
             return {"error": str(e)}
     
     async def close(self):

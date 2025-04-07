@@ -325,30 +325,46 @@ class PDFExtractor:
         # near the image bounding box
         try:
             # Get image rectangle
-            img_rect = page.get_image_bbox(img_info[0])
-            
+            img_rect = None
+            try:
+                img_rect = page.get_image_bbox(img_info[0])
+            except Exception as bbox_error:
+                # Log the specific error related to getting the bbox
+                logger.warning(f"Could not get bbox for image {img_info[0]} on page {page.number}: {bbox_error}")
+                # Continue without a bbox, caption finding will likely fail or be inaccurate
+                # but prevents crashing the entire extraction
+
             if not img_rect:
                 return ""
-            
+
             # Get text blocks
             blocks = page.get_text("dict")["blocks"]
-            
+
             for block in blocks:
                 if block["type"] == 0:  # Text block
                     block_rect = fitz.Rect(block["bbox"])
-                    
+
                     # Check if block is below or close to the image
-                    if (abs(block_rect.y0 - img_rect.y1) < 50 or  # Below the image
-                        abs(block_rect.y1 - img_rect.y0) < 50):   # Above the image
-                        
+                    # Increased tolerance slightly
+                    if (abs(block_rect.y0 - img_rect.y1) < 75 or  # Below the image
+                        abs(block_rect.y1 - img_rect.y0) < 75):   # Above the image
+
                         block_text = "".join([span["text"] for line in block["lines"] for span in line["spans"]])
-                        
+
                         # Check if this contains caption markers
-                        if re.search(r'(Figure|Fig\.|Table|Algorithm)(\s+\d+)?', block_text, re.IGNORECASE):
-                            return block_text
+                        # Added flexibility for common caption starts
+                        if re.search(r'^(Figure|Fig\\.?|Table|Algorithm|Listing|Scheme)\\s+\\d+', block_text, re.IGNORECASE):
+                            # Return first line if it looks like a caption start, or full block
+                            first_line_match = re.match(r'^(Figure|Fig\\.?|Table|Algorithm|Listing|Scheme)\\s+\\d+.*', block_text.split('\\n')[0], re.IGNORECASE)
+                            if first_line_match:
+                                return first_line_match.group(0).strip()
+                            else:
+                                return block_text.strip() # Return the whole block as potential caption
+
         except Exception as e:
-            logger.error(f"Error finding caption: {str(e)}")
-            
+            # Log general errors during caption finding, avoid using the original img_info[0] if it might be the cause
+            logger.error(f"Error finding caption on page {page.number}: {str(e)}")
+
         return ""
 
     def extract_text_with_structure(self) -> Tuple[str, Dict[str, Any]]:
@@ -395,3 +411,94 @@ class PDFExtractor:
                 section_text.append(block_text)
         
         return "\n".join(section_text)
+
+class MistralOCRExtractor(PDFExtractor):
+    """PDF text extraction using Mistral OCR API"""
+    
+    def __init__(self):
+        try:
+            from mistralai import Mistral
+            self.Mistral = Mistral
+        except ImportError:
+            logging.error("Mistral AI SDK not installed. Please install using: pip install mistralai")
+            raise ImportError("Mistral AI SDK is required for this extractor")
+        
+        # Get API key from environment
+        self.api_key = os.environ.get("MISTRAL_API_KEY")
+        if not self.api_key:
+            logging.error("MISTRAL_API_KEY environment variable not set")
+            raise ValueError("MISTRAL_API_KEY is required for Mistral OCR")
+    
+    def extract_text(self, file_path: str) -> Tuple[str, Dict[str, Any]]:
+        """Extract text and structure using Mistral OCR API"""
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
+            
+        try:
+            # Initialize Mistral client
+            client = self.Mistral(api_key=self.api_key)
+            
+            # Two approaches:
+            # 1. Upload file to Mistral and get URL
+            # 2. Read file and pass as base64
+            # Let's implement approach 1 as it's more robust for larger files
+            
+            logging.info(f"Uploading PDF to Mistral: {file_path}")
+            
+            # Upload the file to Mistral
+            with open(file_path, "rb") as file:
+                uploaded_pdf = client.files.create(
+                    file=file,
+                    purpose="ocr-processing"
+                )
+            
+            # Get a signed URL for the uploaded file
+            signed_url = client.files.get_signed_url(file_id=uploaded_pdf.id)
+            
+            logging.info("File uploaded successfully, processing with OCR")
+            
+            # Process the document with OCR
+            ocr_response = client.ocr.process(
+                model="mistral-ocr-latest",
+                document={
+                    "type": "document_url",
+                    "document_url": signed_url.url,
+                }
+            )
+            
+            # Extract pages and metadata
+            all_text = []
+            pages_metadata = []
+            
+            for page in ocr_response.pages:
+                # Each page has the markdown content
+                all_text.append(page.markdown)
+                
+                # Store page metadata
+                pages_metadata.append({
+                    "index": page.index,
+                    "dimensions": page.dimensions if hasattr(page, "dimensions") else None,
+                })
+            
+            # Combine all text
+            text_content = "\n\n".join(all_text)
+            
+            # Create metadata
+            metadata = {
+                "ocr_processor": "mistral-ocr-latest",
+                "page_count": len(ocr_response.pages),
+                "pages": pages_metadata,
+                "is_markdown": True  # Flag to indicate the content is in markdown format
+            }
+            
+            # Clean up - delete the uploaded file from Mistral if needed
+            # client.files.delete(file_id=uploaded_pdf.id)
+            
+            return text_content, metadata
+            
+        except Exception as e:
+            logging.error(f"Error extracting text with Mistral OCR: {str(e)}")
+            raise RuntimeError(f"Failed to extract text using Mistral OCR: {str(e)}")
+    
+    def get_name(self) -> str:
+        return "mistral_ocr"
