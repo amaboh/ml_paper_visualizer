@@ -1,12 +1,13 @@
-import os
-import sys
 import pytest
 from fastapi.testclient import TestClient
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import json
+import os
 
 from app.main import app
+from app.core.models import Paper, PaperStatus, PaperDatabase, Component, ComponentType
+from app.core.models import PaperType, Section, LocationInfo, Relationship
 
-client = TestClient(app)
+client = TestClient(application=app)
 
 def test_root_endpoint():
     response = client.get("/")
@@ -70,3 +71,155 @@ def test_api_visualization_endpoint():
     
     # Check that component metadata has entries
     assert len(data["component_metadata"]) > 0
+
+@pytest.mark.asyncio
+async def test_get_paper_with_sections_and_type():
+    """Test the get_paper endpoint with paper type and sections"""
+    # Create a test paper with type and sections
+    paper = Paper(
+        id="test-paper-id", 
+        title="Test Paper",
+        paper_type=PaperType.NEW_ARCHITECTURE,
+        sections={
+            "abstract": Section(
+                id="section-1",
+                name="abstract",
+                title="Abstract",
+                start_location=LocationInfo(page=0, position=0),
+                end_location=LocationInfo(page=0, position=100),
+                summary="Test abstract"
+            ),
+            "methods": Section(
+                id="section-2",
+                name="methods",
+                title="Methods",
+                start_location=LocationInfo(page=1, position=0),
+                end_location=LocationInfo(page=2, position=100),
+                summary="Test methods"
+            )
+        }
+    )
+    
+    # Store the paper in the database
+    PaperDatabase.add_paper(paper)
+    
+    # Make a request to the API
+    response = client.get(f"/api/papers/{paper.id}")
+    
+    # Check the response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == paper.id
+    assert data["title"] == paper.title
+    assert data["paper_type"] == PaperType.NEW_ARCHITECTURE
+    assert len(data["sections"]) == 2
+    assert "abstract" in data["sections"]
+    assert "methods" in data["sections"]
+
+@pytest.mark.asyncio
+async def test_get_paper_sections():
+    """Test the get_paper_sections endpoint"""
+    # Create a test paper with sections
+    paper = Paper(
+        id="test-paper-id", 
+        title="Test Paper",
+        sections={
+            "abstract": Section(
+                id="section-1",
+                name="abstract",
+                title="Abstract",
+                start_location=LocationInfo(page=0, position=0),
+                end_location=LocationInfo(page=0, position=100),
+                summary="Test abstract"
+            )
+        }
+    )
+    
+    # Store the paper in the database
+    PaperDatabase.add_paper(paper)
+    
+    # Make a request to the API
+    response = client.get(f"/api/papers/{paper.id}/sections")
+    
+    # Check the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "sections" in data
+    assert len(data["sections"]) == 1
+    assert "abstract" in data["sections"]
+
+@pytest.mark.asyncio
+async def test_get_relationship_analysis():
+    """Test the get_workflow_relationship_analysis endpoint"""
+    # Create a test paper with components, relationships, and analysis
+    paper = Paper(
+        id="test-paper-id", 
+        title="Test Paper",
+        components=[
+            Component(
+                id="comp-id-1",
+                paper_id="test-paper-id",
+                type=ComponentType.MODEL,
+                name="Test Model",
+                description="A test model"
+            ),
+            Component(
+                id="comp-id-2",
+                paper_id="test-paper-id",
+                type=ComponentType.DATASET,
+                name="Test Dataset",
+                description="A test dataset"
+            )
+        ],
+        relationships=[
+            Relationship(
+                id="rel-id-1",
+                paper_id="test-paper-id",
+                source_id="comp-id-2",
+                target_id="comp-id-1",
+                type="uses",
+                description="Dataset is used by Model"
+            )
+        ],
+        details={
+            "relationship_analysis": {
+                "relationship_types": {"uses": 1},
+                "central_components": [
+                    {"id": "comp-id-1", "name": "Test Model", "type": "model", "connections": 1}
+                ],
+                "total_relationships": 1
+            }
+        }
+    )
+    
+    # Store the paper in the database
+    PaperDatabase.add_paper(paper)
+    
+    # Make a request to the API
+    response = client.get(f"/api/workflow/{paper.id}/relationships/analysis")
+    
+    # Check the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "relationship_analysis" in data
+    analysis = data["relationship_analysis"]
+    assert "relationship_types" in analysis
+    assert "central_components" in analysis
+    assert "total_relationships" in analysis
+    assert analysis["total_relationships"] == 1
+
+@pytest.mark.asyncio
+async def test_get_relationship_types():
+    """Test the get_workflow_relationship_types endpoint"""
+    # Make a request to the API
+    response = client.get("/api/workflow/relationship-types")
+    
+    # Check the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "relationship_types" in data
+    relationship_types = data["relationship_types"]
+    assert "flow" in relationship_types
+    assert "uses" in relationship_types
+    assert "contains" in relationship_types
+    assert "evaluates" in relationship_types

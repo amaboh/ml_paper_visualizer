@@ -354,6 +354,78 @@ classDef default fill:#9CA3AF,stroke:#4B5563,color:white;
             logger.error(f"Error generating visualization: {str(e)}")
             return {"error": str(e)}
     
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def process_with_prompt(self, prompt: str, content: str, output_format: str = "text") -> Any:
+        """
+        Process content with a custom prompt
+        
+        Args:
+            prompt: The instruction prompt
+            content: Content to process
+            output_format: Expected output format (text, json)
+            
+        Returns:
+            Result in the specified format
+        """
+        if not self.api_key or not self.client:
+            return {"error": "No API key provided or client not initialized"}
+        
+        try:
+            # Truncate content if too long
+            max_length = 30000  # Adjust based on model limits
+            truncated_content = content[:max_length] if len(content) > max_length else content
+            
+            full_prompt = f"{prompt}\n\nPaper Content:\n{truncated_content}"
+            
+            # Add specific instructions for JSON output
+            if output_format == "json":
+                full_prompt += "\n\nYour response must be valid JSON. Do not include explanations outside of the JSON."
+            
+            response = await self.client.chat.completions.create(
+                model="gpt-4",  # Using GPT-4 for better accuracy
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant specialized in analyzing research papers."},
+                    {"role": "user", "content": full_prompt}
+                ],
+                temperature=0.2,  # Lower temperature for more deterministic output
+                max_tokens=2000
+            )
+            
+            # Extract and process the response
+            result_text = response.choices[0].message.content
+            
+            # If JSON output is expected, try to parse it
+            if output_format == "json":
+                try:
+                    # Try to parse the entire response as JSON
+                    return json.loads(result_text)
+                except json.JSONDecodeError:
+                    # If that fails, try to extract JSON from markdown code blocks
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text)
+                    if json_match:
+                        try:
+                            return json.loads(json_match.group(1))
+                        except json.JSONDecodeError:
+                            logger.error("Failed to parse JSON from code block")
+                    
+                    # If that also fails, try to extract anything that looks like JSON
+                    json_match = re.search(r'({[\s\S]*})', result_text)
+                    if json_match:
+                        try:
+                            return json.loads(json_match.group(1))
+                        except json.JSONDecodeError:
+                            logger.error("Failed to parse JSON from brace pattern")
+                    
+                    logger.error("Failed to parse JSON from AI response")
+                    return {"error": "Failed to parse JSON response"}
+            
+            return result_text
+            
+        except Exception as e:
+            logger.error(f"Error in AI processing: {str(e)}")
+            return {"error": str(e)}
+    
     async def close(self):
         """
         Close any open resources

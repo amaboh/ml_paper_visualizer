@@ -10,6 +10,13 @@ class PaperStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class PaperType(str, Enum):
+    NEW_ARCHITECTURE = "new_architecture"
+    SURVEY = "survey"
+    APPLICATION = "application"
+    THEORETICAL = "theoretical"
+    UNKNOWN = "unknown"
+
 class ComponentType(str, Enum):
     DATA_COLLECTION = "data_collection"
     PREPROCESSING = "preprocessing"
@@ -18,6 +25,27 @@ class ComponentType(str, Enum):
     TRAINING = "training"
     EVALUATION = "evaluation"
     RESULTS = "results"
+    # Extended component types for more detailed model architecture representation
+    LAYER = "layer"
+    MODULE = "module"
+    HYPERPARAMETER = "hyperparameter"
+    ALGORITHM = "algorithm"
+    DATASET = "dataset"
+    METRIC = "metric"
+
+class LocationInfo(BaseModel):
+    page: Optional[int] = None
+    paragraph: Optional[int] = None
+    position: Optional[int] = None  # Character position in document
+
+class Section(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    title: str
+    start_location: LocationInfo
+    end_location: LocationInfo
+    summary: str
+    text: Optional[str] = None  # Full text of the section
 
 class Component(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -28,6 +56,8 @@ class Component(BaseModel):
     details: Dict[str, Any] = {}
     source_section: Optional[str] = None
     source_page: Optional[int] = None
+    location: Optional[LocationInfo] = None
+    is_novel: bool = False  # Indicates if this is a novel contribution
 
 class Relationship(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -50,9 +80,12 @@ class Paper(BaseModel):
     url: Optional[str] = None
     status: PaperStatus = PaperStatus.UPLOADED
     uploaded_at: datetime = Field(default_factory=datetime.now)
+    paper_type: Optional[PaperType] = None
+    sections: Dict[str, Section] = {}
     components: List[Component] = []
     relationships: List[Relationship] = []
     visualization: Optional[Visualization] = None
+    details: Dict[str, Any] = {}  # Store additional metadata
 
 class PaperUpload(BaseModel):
     file: Optional[bytes] = None
@@ -63,6 +96,8 @@ class PaperResponse(BaseModel):
     title: Optional[str] = None
     status: PaperStatus
     message: Optional[str] = None
+    paper_type: Optional[PaperType] = None
+    sections: Optional[List[str]] = None
 
 class WorkflowResponse(BaseModel):
     paper_id: str

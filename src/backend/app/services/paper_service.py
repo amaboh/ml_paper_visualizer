@@ -1,6 +1,7 @@
 from app.services.paper_parser import PaperParser
+from app.services.ai_extraction_service import AIExtractionService
 from app.services.visualization_generator import VisualizationGenerator
-from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization
+from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization, Section
 from fastapi import UploadFile
 import os
 import aiofiles
@@ -160,25 +161,35 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
         bool: True if successful, False otherwise
     """
     try:
-        # Initialize parser and visualization generator
-        parser = PaperParser()
+        # Initialize the multi-stage extraction service and visualization generator
+        extraction_service = AIExtractionService()
         viz_generator = VisualizationGenerator()
         
-        # Parse the paper to extract components and relationships
-        components, relationships = await parser.parse_paper(file_path, paper.id)
+        # Process the paper with multi-stage extraction
+        extraction_result = await extraction_service.process_paper(file_path, paper.id)
         
-        if not components:
-            logger.error("No components extracted from paper")
+        if "error" in extraction_result:
+            logger.error(f"Error in paper extraction: {extraction_result['error']}")
             return False
         
-        # Save components and relationships to paper record
-        paper.components = components
-        paper.relationships = relationships
+        # Update paper with extracted data
+        paper.paper_type = extraction_result.get("paper_type")
+        paper.sections = extraction_result.get("sections", {})
+        paper.components = extraction_result.get("components", [])
         
-        # Generate visualization - both use the same AIProcessor singleton
+        # Use the relationships extracted in Stage 3
+        paper.relationships = extraction_result.get("relationships", [])
+        
+        # Store relationship analysis in paper details
+        if not hasattr(paper, "details"):
+            paper.details = {}
+        
+        paper.details["relationship_analysis"] = extraction_result.get("relationship_analysis", {})
+        
+        # Generate visualization
         viz_data = await viz_generator.create_visualization(
-            components=components,
-            relationships=relationships
+            components=paper.components,
+            relationships=paper.relationships
         )
         
         if "error" in viz_data:
@@ -198,9 +209,8 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
         # Update the paper in the database
         PaperDatabase.update_paper(paper)
         
-        logger.info(f"Successfully processed paper {paper.id}")
         return True
         
     except Exception as e:
-        logger.error(f"Error in paper processing pipeline: {str(e)}")
+        logger.error(f"Error processing paper: {str(e)}")
         return False

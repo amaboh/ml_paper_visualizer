@@ -91,3 +91,49 @@ async def get_workflow_summary(
             summary["component_counts"][component_type] = count
     
     return summary
+
+@router.get("/{paper_id}/relationships/analysis")
+async def get_workflow_relationship_analysis(paper_id: str):
+    """
+    Get the relationship analysis for a paper workflow
+    
+    Args:
+        paper_id: ID of the paper
+        
+    Returns:
+        dict: Relationship analysis data
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    # Get relationship analysis from paper details
+    relationship_analysis = paper.details.get("relationship_analysis", {}) if hasattr(paper, "details") else {}
+    
+    return {
+        "paper_id": paper_id,
+        "relationship_analysis": relationship_analysis
+    }
+
+@router.get("/relationship-types")
+async def get_workflow_relationship_types():
+    """
+    Get all available relationship types with descriptions
+    
+    Returns:
+        dict: Map of relationship types and descriptions
+    """
+    relationship_types = {
+        "flow": "Data or processing flow from one component to another (X is input to Y)",
+        "uses": "One component uses or depends on another (X uses Y)",
+        "contains": "Hierarchical relationship (X contains Y)",
+        "evaluates": "Evaluation relationship (X evaluates Y)",
+        "compares": "Comparison relationship (X is compared to Y)",
+        "improves": "Improvement relationship (X improves upon Y)",
+        "part_of": "Component is part of another (X is part of Y)"
+    }
+    
+    return {
+        "relationship_types": relationship_types
+    }

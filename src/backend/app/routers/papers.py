@@ -90,17 +90,72 @@ async def upload_paper(
             message="Paper URL received and processing started"
         )
 
-@router.get("/{paper_id}", response_model=Paper)
+@router.get("/{paper_id}", response_model=PaperResponse)
 async def get_paper(paper_id: str):
     """
-    Get paper details by ID
+    Get paper information
+    
+    Args:
+        paper_id: ID of the paper
+        
+    Returns:
+        PaperResponse: Paper information
     """
     paper = PaperDatabase.get_paper(paper_id)
     
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    return paper
+    # Get basic section names if available
+    section_names = list(paper.sections.keys()) if paper.sections else []
+    
+    return PaperResponse(
+        id=paper.id,
+        title=paper.title,
+        status=paper.status,
+        paper_type=paper.paper_type,
+        sections=section_names
+    )
+
+@router.get("/{paper_id}/sections")
+async def get_paper_sections(paper_id: str):
+    """
+    Get paper sections
+    
+    Args:
+        paper_id: ID of the paper
+        
+    Returns:
+        dict: Paper sections
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    return {"sections": paper.sections}
+
+@router.get("/{paper_id}/section/{section_name}")
+async def get_paper_section(paper_id: str, section_name: str):
+    """
+    Get a specific paper section
+    
+    Args:
+        paper_id: ID of the paper
+        section_name: Name of the section
+        
+    Returns:
+        dict: Section information
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    if section_name not in paper.sections:
+        raise HTTPException(status_code=404, detail="Section not found")
+    
+    return {"section": paper.sections[section_name]}
 
 @router.get("/{paper_id}/status", response_model=PaperResponse)
 async def get_paper_status(paper_id: str):
