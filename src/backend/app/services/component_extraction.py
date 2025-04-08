@@ -124,8 +124,8 @@ class ComponentExtractionService:
                  logger.error("AI Processor returned an empty response for hierarchical extraction. Potential API issue or content filtering.")
                  logger.info("Attempting fallback extraction method due to empty AI response...")
                  return await self.extract_components_fallback(
-                     paper_id=paper_id,
-                     paper_type=paper_type,
+                paper_id=paper_id,
+                paper_type=paper_type,
                      combined_text=paper_text
                  )
 
@@ -147,8 +147,8 @@ class ComponentExtractionService:
             if not parsed_components or len(parsed_components) == 0:
                 logger.warning("Hierarchical extraction returned no components despite valid response. Trying fallback...")
                 return await self.extract_components_fallback(
-                     paper_id=paper_id,
-                     paper_type=paper_type,
+                paper_id=paper_id,
+                paper_type=paper_type,
                      combined_text=paper_text
                 )
                 
@@ -309,7 +309,7 @@ class ComponentExtractionService:
                 content=truncated_fallback_text, 
                 output_format="json"
             )
-            
+        
             # Check if the response indicates an error from the processor itself
             if isinstance(response, dict) and "error" in response:
                 logger.error(f"Fallback extraction AI processor error: {response['error']}")
@@ -355,5 +355,5 @@ class ComponentExtractionService:
             return components if components else self._create_minimal_components(paper_id, paper_type)
 
         except Exception as e:
-            logger.error(f"Fallback extraction failed: {e}")
+            logger.error(f"Fallback extraction failed: {e}", exc_info=True)
             return self._create_minimal_components(paper_id, paper_type) 

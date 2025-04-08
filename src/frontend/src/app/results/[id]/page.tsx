@@ -6,12 +6,18 @@ import {
   ArrowLeftIcon,
   DownloadIcon,
   CogIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+  RefreshCwIcon,
 } from "../../../components/icons";
 import { useRouter } from "next/navigation";
 import SimpleVisualization from "../../../components/SimpleVisualization";
-import MermaidDiagram from "../../../components/MermaidDiagram";
+import MermaidDiagram, {
+  MermaidDiagramHandle,
+} from "../../../components/MermaidDiagram";
 import D3Visualization from "../../../components/D3Visualization";
 import ComponentDetail from "../../../components/ComponentDetail";
+import type Panzoom from "@panzoom/panzoom";
 
 interface ResultsProps {
   params: {
@@ -109,6 +115,7 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
   const { id } = params;
   const router = useRouter();
   const visualizationRef = useRef<HTMLDivElement>(null);
+  const mermaidRef = useRef<MermaidDiagramHandle>(null);
 
   const [paperData, setPaperData] = useState<PaperData | null>(null);
   const [selectedComponent, setSelectedComponent] =
@@ -575,6 +582,56 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
     };
   };
 
+  // Simplify the handlePanzoomInit function
+  const handlePanzoomInit = (instance: ReturnType<typeof Panzoom> | null) => {
+    console.log(
+      "Panzoom instance initialized (from Results page):",
+      !!instance
+    );
+    // We no longer need to store the instance or methods here
+    // Set state if needed for UI elements dependent on init status
+  };
+
+  // Zoom control functions - Use the ref to call methods
+  const handleZoomIn = () => {
+    try {
+      if (mermaidRef.current) {
+        console.log("Calling zoomIn via ref");
+        mermaidRef.current.zoomIn();
+      } else {
+        console.warn("MermaidDiagram ref not available yet for zoomIn.");
+      }
+    } catch (error) {
+      console.error("Error in handleZoomIn:", error);
+    }
+  };
+
+  const handleZoomOut = () => {
+    try {
+      if (mermaidRef.current) {
+        console.log("Calling zoomOut via ref");
+        mermaidRef.current.zoomOut();
+      } else {
+        console.warn("MermaidDiagram ref not available yet for zoomOut.");
+      }
+    } catch (error) {
+      console.error("Error in handleZoomOut:", error);
+    }
+  };
+
+  const handleResetView = () => {
+    try {
+      if (mermaidRef.current) {
+        console.log("Calling reset via ref");
+        mermaidRef.current.reset();
+      } else {
+        console.warn("MermaidDiagram ref not available yet for reset.");
+      }
+    } catch (error) {
+      console.error("Error in handleResetView:", error);
+    }
+  };
+
   // Render visualization based on selected type
   const renderVisualization = () => {
     const isProcessing = paperData?.status === "processing";
@@ -594,7 +651,42 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
       );
     } else if (visualizationType === "mermaid" && mermaidChart) {
       return (
-        <MermaidDiagram chart={mermaidChart} onNodeClick={handleNodeClick} />
+        <div className="relative h-full">
+          <MermaidDiagram
+            ref={mermaidRef}
+            chart={mermaidChart}
+            onNodeClick={handleNodeClick}
+            onPanzoomInit={handlePanzoomInit}
+          />
+          {visualizationType === "mermaid" && (
+            <div className="absolute bottom-4 right-4 flex space-x-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleZoomOut}
+                title="Zoom Out"
+              >
+                <ZoomOutIcon />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleZoomIn}
+                title="Zoom In"
+              >
+                <ZoomInIcon />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleResetView}
+                title="Reset View"
+              >
+                <RefreshCwIcon />
+              </Button>
+            </div>
+          )}
+        </div>
       );
     } else {
       // Fallback to simple visualization
