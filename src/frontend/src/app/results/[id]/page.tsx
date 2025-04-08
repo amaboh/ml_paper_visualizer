@@ -19,6 +19,30 @@ interface ResultsProps {
   };
 }
 
+interface DiagnosticsStage {
+  status: string;
+  error?: string;
+}
+
+interface DiagnosticsFileInfo {
+  file_size_kb?: number;
+  text_length?: number;
+  content_type_extracted?: string;
+}
+
+interface DiagnosticsData {
+  parser_used?: string;
+  extraction_stages?: Record<string, DiagnosticsStage>;
+  timings?: Record<string, number>;
+  file_info?: DiagnosticsFileInfo;
+  full_text_extracted?: string;
+}
+
+interface ErrorDetails {
+  type?: string;
+  message?: string;
+}
+
 interface PaperData {
   id: string;
   title: string;
@@ -26,12 +50,14 @@ interface PaperData {
   components?: ComponentData[];
   relationships?: RelationshipData[];
   paper_type?: string;
-  diagnostics?: {
-    extraction_stages?: Record<string, any>;
-    timings?: Record<string, number>;
-    file_info?: Record<string, any>;
+  visualization?: {
+    diagram_type?: string;
+    diagram_data?: string;
+    component_mapping?: Record<string, string>;
   };
+  diagnostics?: DiagnosticsData;
   error_message?: string;
+  error_details?: ErrorDetails;
 }
 
 interface ComponentData {
@@ -781,24 +807,30 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
                   </h4>
                   <div className="space-y-3">
                     {Object.entries(diagnostics.extraction_stages).map(
-                      ([stage, data]) => (
-                        <div key={stage} className="bg-gray-50 p-3 rounded">
+                      ([stageKey, stageData]: [string, DiagnosticsStage]) => (
+                        <div key={stageKey} className="bg-gray-50 p-3 rounded">
                           <h5 className="font-medium capitalize">
-                            {stage.replace(/_/g, " ")}
+                            {stageKey.replace(/_/g, " ")}
                           </h5>
                           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mt-2">
-                            {Object.entries(data as Record<string, any>).map(
-                              ([key, value]) => (
-                                <React.Fragment key={key}>
-                                  <dt className="text-gray-500">
-                                    {key.replace(/_/g, " ")}
-                                  </dt>
-                                  <dd className="text-gray-900">
-                                    {value?.toString()}
-                                  </dd>
-                                </React.Fragment>
-                              )
-                            )}
+                            <dt className="text-gray-500">Status:</dt>
+                            <dd className="text-gray-900">
+                              <span
+                                className={
+                                  stageData.status === "success"
+                                    ? "text-green-600"
+                                    : "text-red-600"
+                                }
+                              >
+                                {stageData.status}
+                              </span>
+                              {stageData.error && (
+                                <span className="text-red-500 text-sm">
+                                  {" "}
+                                  - Error: {stageData.error}
+                                </span>
+                              )}
+                            </dd>
                           </dl>
                         </div>
                       )

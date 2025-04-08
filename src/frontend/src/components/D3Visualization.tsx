@@ -60,6 +60,11 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
   const [visibleLinks, setVisibleLinks] = useState<LinkData[]>([]);
   const [nodesMap, setNodesMap] = useState<Map<string, NodeData>>(new Map());
 
+  // Log received props
+  useEffect(() => {
+    console.log("D3Visualization Props Updated:", { nodes, links });
+  }, [nodes, links]);
+
   // Get color for each node type
   const getColorForType = (type: string) => {
     const colors: Record<string, string> = {
@@ -77,7 +82,14 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
 
   // Process nodes to initialize hierarchy and expansion state
   useEffect(() => {
-    if (!nodes.length) return;
+    console.log("D3 Nodes Processing Effect - Input Nodes:", nodes);
+    if (!nodes || !nodes.length) {
+      console.log("D3 Nodes Processing: No nodes received, returning.");
+      setVisibleNodes([]);
+      setVisibleLinks([]);
+      setNodesMap(new Map());
+      return;
+    }
 
     // Create a map of all nodes for quick reference
     const nodeMap = new Map<string, NodeData>();
@@ -116,8 +128,6 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
         (node.parent && nodesMap.get(node.parent)?._isExpanded) // Or child of expanded node
     );
 
-    setVisibleNodes(visibleNodesList);
-
     // Only show links where both source and target are visible
     const visibleNodeIds = new Set(visibleNodesList.map((n) => n.id));
     const visibleLinksList = allLinks.filter(
@@ -126,6 +136,11 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
         visibleNodeIds.has(link.target.toString())
     );
 
+    console.log("D3 UpdateVisibleElements:", {
+      visibleNodesList,
+      visibleLinksList,
+    });
+    setVisibleNodes(visibleNodesList);
     setVisibleLinks(visibleLinksList);
   };
 
@@ -193,15 +208,22 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
 
   // Main rendering function
   const renderVisualization = () => {
-    if (
-      isProcessing ||
-      !visibleNodes.length ||
-      !visibleLinks.length ||
-      !svgRef.current
-    ) {
+    console.log("D3 renderVisualization called. State:", {
+      isProcessing,
+      visibleNodes,
+      visibleLinks,
+    });
+    // Adjusted guard clause: We can render even with 0 links
+    if (isProcessing || !visibleNodes.length || !svgRef.current) {
+      console.log("D3 renderVisualization: Guard clause hit, returning.", {
+        isProcessing,
+        nodeCount: visibleNodes.length,
+        hasSvgRef: !!svgRef.current,
+      });
       return;
     }
 
+    console.log("D3 renderVisualization: Proceeding to render...");
     // Clear previous visualization
     d3.select(svgRef.current).selectAll("*").remove();
 
@@ -210,6 +232,11 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
       .select(svgRef.current)
       .attr("width", width)
       .attr("height", height);
+
+    // Create container groups for zoomable elements
+    const zoomContainer = svg.append("g").attr("class", "zoom-container");
+    const linkGroup = zoomContainer.append("g").attr("class", "links");
+    const nodeGroupContainer = zoomContainer.append("g").attr("class", "nodes");
 
     // Create arrow marker definitions for the links
     svg
@@ -229,32 +256,37 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
       .style("stroke", "none");
 
     // Create a force simulation
+    const processedNodes = visibleNodes;
+    const processedLinks = visibleLinks
+      .map((link) => {
+        const sourceNode = nodesMap.get(link.source);
+        const targetNode = nodesMap.get(link.target);
+        if (sourceNode && targetNode) {
+          return {
+            ...link,
+            source: sourceNode,
+            target: targetNode,
+          };
+        }
+        return null;
+      })
+      .filter(
+        (link): link is LinkData & { source: NodeData; target: NodeData } =>
+          link !== null
+      );
+
     const simulation = d3
-      .forceSimulation()
+      .forceSimulation<NodeData>(processedNodes)
       .force(
         "link",
         d3
-          .forceLink()
-          .id((d: any) => d.id)
-          .distance(150)
+          .forceLink<NodeData, LinkData>(processedLinks)
+          .id((d) => d.id)
+          .distance(120)
       )
-      .force("charge", d3.forceManyBody().strength(-500))
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide().radius(60));
-
-    // Process the data for D3
-    const nodeMap = new Map(visibleNodes.map((node) => [node.id, node]));
-    const processedLinks = visibleLinks
-      .map((link) => ({
-        ...link,
-        source: link.source,
-        target: link.target,
-      }))
-      .filter(
-        (link) =>
-          nodeMap.has(link.source as string) &&
-          nodeMap.has(link.target as string)
-      );
+      .force("charge", d3.forceManyBody().strength(-400))
+      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.1))
+      .force("collision", d3.forceCollide().radius(50));
 
     // Add a gradient definition for novel components
     const defs = svg.append("defs");
@@ -276,9 +308,14 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
       .attr("offset", (d) => d.offset)
       .attr("stop-color", (d) => d.color);
 
+    // --- Link Debugging ---
+    console.log(
+      "D3 renderVisualization - Processed Links for Drawing:",
+      processedLinks
+    );
+
     // Create the link elements with styling based on type
-    const link = svg
-      .append("g")
+    const link = linkGroup
       .selectAll("line")
       .data(processedLinks)
       .enter()
@@ -300,8 +337,7 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
       .attr("class", (d) => `link ${d.type}`);
 
     // Create a group for each node
-    const nodeGroup = svg
-      .append("g")
+    const nodeGroup = nodeGroupContainer
       .selectAll(".node-group")
       .data(visibleNodes)
       .enter()
@@ -438,11 +474,20 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
       )
       .attr("fill", "#111");
 
-    // Update the simulation with the nodes and links
-    simulation.nodes(visibleNodes).on("tick", ticked);
-    simulation
-      .force<d3.ForceLink<NodeData, LinkData>>("link")
-      ?.links(processedLinks);
+    // --- Zoom Setup ---
+    const zoomBehavior = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 4]) // Min/Max zoom levels
+      .on("zoom", (event) => {
+        zoomContainer.attr("transform", event.transform);
+      });
+
+    svg.call(zoomBehavior);
+    // Optional: Add initial transform (e.g., center the graph slightly)
+    // svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(50, 50).scale(0.8));
+
+    // Update positions on each tick
+    simulation.on("tick", ticked);
 
     // Function to handle position updates on each tick
     function ticked() {

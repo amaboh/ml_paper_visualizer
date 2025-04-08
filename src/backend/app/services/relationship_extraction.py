@@ -6,45 +6,35 @@ from app.core.models import Component, Relationship, PaperType
 
 logger = logging.getLogger(__name__)
 
-# Base prompt template for relationship extraction
+# Updated Prompt for Strategy A (Component-Only)
 RELATIONSHIP_EXTRACTION_PROMPT = """
-You are an expert in machine learning research. Based on the paper content and the extracted components, 
-identify the relationships between components.
+You are an expert system specialized in analyzing machine learning research papers and their components.
+Your task is to identify the direct, primary relationships between the provided components, representing the workflow or structure described implicitly or explicitly by the components themselves.
 
-Paper Type: {paper_type}
+**Input Components:**
 
-Extracted Components:
-{components_list}
+```json
+{components_json}
+```
 
-Focus on identifying the following types of relationships:
-1. "flow" - Data or processing flow from one component to another (X is input to Y)
-2. "uses" - One component uses or depends on another (X uses Y)
-3. "contains" - Hierarchical relationship (X contains Y)
-4. "evaluates" - Evaluation relationship (X evaluates Y)
-5. "compares" - Comparison relationship (X is compared to Y)
-6. "improves" - Improvement relationship (X improves upon Y)
-7. "part_of" - Component is part of another (X is part of Y)
+**Instructions:**
 
-For each relationship, provide:
-1. Source: The ID of the source component
-2. Target: The ID of the target component
-3. Type: The relationship type (from the list above)
-4. Description: Brief description of the relationship
-5. Confidence: A number between 0-1 indicating confidence in this relationship
+1.  Analyze the `id`, `name`, `type`, and `description` of each component in the list above.
+2.  Identify direct relationships between these components based on their information and typical ML workflow patterns (e.g., data usage, model architecture, training steps, evaluation methods).
+3.  Focus on connections like `USES` (e.g., model uses dataset), `PRODUCES` (e.g., preprocessing produces features), `EVALUATES` (e.g., evaluation uses metric), `CONTAINS` (e.g., model contains layer), `PART_OF` (e.g., layer is part of encoder), `FLOWS_TO` (general sequential step).
+4.  **Output Format:** Return your findings ONLY as a valid JSON list of relationship objects. Each object in the list MUST have the following keys:
+    *   `source_component_id`: string (The `id` of the source component from the input list)
+    *   `target_component_id`: string (The `id` of the target component from the input list)
+    *   `relationship_type`: string (A descriptive type like `USES`, `PRODUCES`, `EVALUATES`, `CONTAINS`, `PART_OF`, `FLOWS_TO`)
+    *   `description`: string (A brief explanation of why this relationship exists based on the component data)
+5.  **Constraints:**
+    *   Only include relationships where both `source_component_id` and `target_component_id` are present in the provided Input Components list.
+    *   Do NOT include relationships to components not in the list.
+    *   Do NOT include self-relationships (source and target are the same).
+    *   If no direct relationships can be confidently identified, return an empty JSON list: `[]`.
+    *   Ensure the entire output is a single, valid JSON list.
 
-Return the relationships as a JSON array with this structure:
-[
-  {{
-    "source_id": "component_id_1",
-    "target_id": "component_id_2",
-    "type": "relationship_type",
-    "description": "brief description",
-    "confidence": 0.9
-  }},
-  ...
-]
-
-Paper Content:
+**JSON Output:**
 """
 
 class RelationshipExtractionService:
@@ -64,95 +54,132 @@ class RelationshipExtractionService:
     
     async def extract_relationships(
         self,
-        paper_id: str,
-        paper_type: PaperType,
+        paper_id: str, # Keep for Relationship model
+        paper_type: PaperType, # Keep for context if needed by AI
         components: List[Component],
-        paper_text: str
+        paper_text: str # Keep for potential future use (Strategy B/C), but ignore for now
     ) -> List[Relationship]:
         """
-        Extract relationships between components
-        
-        Args:
-            paper_id: ID of the paper
-            paper_type: Type of the paper
-            components: List of extracted components
-            paper_text: Text content of the paper or relevant sections
-            
-        Returns:
-            List[Relationship]: Extracted relationships
+        Extract relationships between components using Strategy A (Component-Only Prompt).
         """
         if not components or len(components) < 2:
-            logger.warning("Not enough components to extract relationships")
-            return self._generate_fallback_relationships(paper_id, components)
+            logger.warning(f"[{paper_id}] Not enough components ({len(components)}) to extract relationships. Skipping AI call.")
+            # Consider removing fallback generation here if AI is primary method
+            # return self._generate_fallback_relationships(paper_id, components) 
+            return [] # Return empty if not enough components
         
-        # Create a simplified list of components for the prompt
-        components_list = "\n".join([
-            f"ID: {comp.id} | Type: {comp.type.value} | Name: {comp.name} | " +
-            f"Description: {comp.description}" 
-            for comp in components
-        ])
+        # Prepare components data for the prompt (JSON serializable dict)
+        components_for_prompt = []
+        component_ids = set() # Keep track of valid IDs
+        for comp in components:
+            components_for_prompt.append({
+                "id": comp.id,
+                "name": comp.name,
+                "type": comp.type.value if hasattr(comp.type, 'value') else str(comp.type),
+                "description": comp.description
+                # Add other relevant fields? details? source_section?
+            })
+            component_ids.add(comp.id)
         
-        # Create the prompt
+        # Convert component data to a JSON string for the prompt
+        try:
+            components_json = json.dumps(components_for_prompt, indent=2)
+        except TypeError as e:
+            logger.error(f"[{paper_id}] Failed to serialize components to JSON for prompt: {e}")
+            return [] # Cannot proceed without component data
+
+        # Create the prompt using the new template
         prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(
-            paper_type=paper_type.value,
-            components_list=components_list
+            components_json=components_json
+            # paper_type=paper_type.value # Removed paper_type for now to simplify
         )
         
-        # Truncate paper text if too long
-        max_chars = 15000
-        truncated_text = paper_text[:max_chars] if len(paper_text) > max_chars else paper_text
+        logger.info(f"[{paper_id}] Sending relationship extraction prompt (Strategy A) to AI.")
+        logger.debug(f"[{paper_id}] Relationship Prompt (first 500 chars): {prompt[:500]}...")
         
-        # Process with AI
-        response = await self.ai_processor.process_with_prompt(
+        # Process with AI, ensuring JSON output is forced
+        response_str = await self.ai_processor.process_text(
             prompt=prompt,
-            content=truncated_text,
-            output_format="json"
+            force_json=True 
         )
         
-        # Process the response into Relationship objects
         relationships = []
-        
-        if isinstance(response, list):
-            # Create a map of component IDs for validation
-            component_ids = {comp.id for comp in components}
+        if not response_str or response_str.startswith('{"error":'):
+            logger.error(f"[{paper_id}] AI Processor failed during relationship extraction or returned error: {response_str}")
+            # Fallback? For now, return empty
+            return []
+
+        # Parse the JSON response
+        try:
+            parsed_response = json.loads(response_str)
             
-            for item in response:
+            relationships_list = []
+            # Check if the response is an object containing the 'relationships' key
+            if isinstance(parsed_response, dict) and 'relationships' in parsed_response:
+                if isinstance(parsed_response['relationships'], list):
+                    relationships_list = parsed_response['relationships']
+                    logger.info(f"[{paper_id}] Extracted relationship list from 'relationships' key in AI response object.")
+                else:
+                    logger.error(f"[{paper_id}] 'relationships' key found in AI response, but its value is not a list. Value: {parsed_response['relationships']}")
+                    return []
+            # Check if the response is directly a list (as originally prompted)
+            elif isinstance(parsed_response, list):
+                relationships_list = parsed_response
+                logger.info(f"[{paper_id}] AI response for relationships was already a JSON list.")
+            # Handle unexpected format
+            else:
+                logger.error(f"[{paper_id}] AI response for relationships was not a JSON list or expected object. Response: {response_str[:500]}...")
+                return []
+
+            # Process the extracted relationship list
+            for item in relationships_list:
                 if not isinstance(item, dict):
+                    logger.warning(f"[{paper_id}] Skipping invalid item in relationship list: {item}")
                     continue
                 
-                source_id = item.get("source_id")
-                target_id = item.get("target_id")
+                source_id = item.get("source_component_id")
+                target_id = item.get("target_component_id")
+                rel_type = item.get("relationship_type", "RELATED_TO") # Default type
+                description = item.get("description", "")
                 
-                # Validate source and target IDs
-                if not source_id or not target_id:
+                # Validate IDs and relationship structure
+                if not source_id or not target_id or not rel_type:
+                    logger.warning(f"[{paper_id}] Skipping relationship item with missing fields: {item}")
                     continue
                     
+                # Validate that IDs exist in the original components list
                 if source_id not in component_ids or target_id not in component_ids:
-                    logger.warning(f"Invalid component ID in relationship: {source_id} -> {target_id}")
+                    logger.warning(f"[{paper_id}] Skipping relationship with invalid component ID(s): {source_id} -> {target_id}")
                     continue
                 
                 # Skip self-references
                 if source_id == target_id:
+                    logger.warning(f"[{paper_id}] Skipping self-relationship for component ID: {source_id}")
                     continue
                 
-                # Extract relationship type
-                rel_type = item.get("type", "flow").lower()
-                
-                # Create the relationship
+                # Create the relationship object
                 relationship = Relationship(
                     paper_id=paper_id,
                     source_id=source_id,
                     target_id=target_id,
-                    type=rel_type,
-                    description=item.get("description", f"Relationship from {source_id} to {target_id}")
+                    type=rel_type.upper(), # Standardize type casing
+                    description=description
                 )
-                
                 relationships.append(relationship)
+                
+            logger.info(f"[{paper_id}] Successfully extracted {len(relationships)} relationships from AI response.")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[{paper_id}] Failed to decode AI JSON response for relationships: {e}. Response: {response_str[:500]}...")
+            return [] # Return empty on JSON parsing error
+        except Exception as e:
+            logger.error(f"[{paper_id}] Error processing AI relationship response: {e}", exc_info=True)
+            return []
         
-        # If no relationships were extracted, fall back to simple relationships
-        if not relationships:
-            logger.warning("No relationships extracted, falling back to simple relationships")
-            relationships = self._generate_fallback_relationships(paper_id, components)
+        # Optional: If AI returns no relationships, maybe still generate fallbacks?
+        # if not relationships:
+        #     logger.warning(f"[{paper_id}] AI found no relationships, generating fallbacks.")
+        #     return self._generate_fallback_relationships(paper_id, components)
         
         return relationships
     

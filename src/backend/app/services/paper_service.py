@@ -1,7 +1,8 @@
 from app.services.paper_parser import PaperParser
 from app.services.ai_extraction_service import AIExtractionService
 from app.services.visualization_generator import VisualizationGenerator
-from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization, Section, ComponentType
+from app.services.relationship_extraction import RelationshipExtractionService
+from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization, Section, ComponentType, PaperType
 from fastapi import UploadFile
 import os
 import aiofiles
@@ -152,7 +153,7 @@ async def process_paper_url(paper: Paper, url: str):
 
 async def process_paper(paper: Paper, file_path: str) -> bool:
     """
-    Process a paper file to extract ML workflow and generate visualization
+    Process a paper file to extract ML workflow and generate AI-driven Mermaid visualization
     
     Args:
         paper: Paper record
@@ -162,12 +163,11 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
         bool: True if successful, False otherwise
     """
     try:
-        # Initialize the multi-stage extraction service and visualization generator
         extraction_service = AIExtractionService()
         viz_generator = VisualizationGenerator()
         
-        # Process the paper with multi-stage extraction, specifying the parser
-        parser_choice = "pymupdf" # Defaulting to PyMuPDF for now
+        # --- Stage 1 & 2: Extract Components (No change) ---
+        parser_choice = paper.diagnostics.get("parser_used", "pymupdf") if paper.diagnostics else "pymupdf"
         extraction_result = await extraction_service.process_paper(
             paper_path=file_path, 
             paper_id=paper.id,
@@ -175,64 +175,71 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
         )
         
         if not extraction_result.get("success", False):
-            # Error is already logged within AIExtractionService
-            # Store the error and diagnostics if available
             paper.error = extraction_result.get("error", "Unknown extraction error")
             paper.diagnostics = extraction_result.get("diagnostics")
-            PaperDatabase.update_paper(paper)
-            return False
-
-        # Update paper with extracted data
-        paper.paper_type = extraction_result.get("paper_type")
-        paper.sections = extraction_result.get("sections", {})
-        paper.components = extraction_result.get("components", [])
-        paper.relationships = extraction_result.get("relationships", [])
-        paper.diagnostics = extraction_result.get("diagnostics")
-        
-        # Check if components were successfully extracted
-        if not paper.components or len(paper.components) == 0:
-            logger.error(f"Paper {paper.id} processing failed: No components were extracted")
-            paper.error = "Component extraction failed: No components were extracted after all attempts."
             paper.status = PaperStatus.FAILED
             PaperDatabase.update_paper(paper)
             return False
-        
-        # Store relationship analysis in paper details (if attribute exists)
-        if hasattr(paper, "details") and paper.details is not None:
-            paper.details["relationship_analysis"] = extraction_result.get("relationship_analysis", {})
-        elif not hasattr(paper, "details"):
-             paper.details = {"relationship_analysis": extraction_result.get("relationship_analysis", {})}
 
-        # Generate visualization
-        viz_data = await viz_generator.create_visualization(
-            components=paper.components if paper.components else [],
-            relationships=paper.relationships if paper.relationships else []
+        # Update paper with extracted data (excluding relationships for now)
+        paper.paper_type = extraction_result.get("paper_type")
+        paper.sections = extraction_result.get("sections", {})
+        paper.components = extraction_result.get("components", [])
+        paper.diagnostics = extraction_result.get("diagnostics")
+        
+        # --- Stage 3 (New): Generate Mermaid Visualization via AI ---
+        # We need the full text for this prompt, ideally extracted earlier
+        # Assuming extraction_result contains full_text or we re-extract (less ideal)
+        full_text = extraction_result.get("diagnostics", {}).get("full_text_extracted") # Need to ensure full_text is stored in diagnostics
+        if not full_text:
+            # If not in diagnostics, re-extract (inefficient but necessary for now)
+            # This dependency suggests maybe text extraction should happen directly in process_paper
+            logger.warning(f"Re-extracting text for Mermaid generation for paper {paper.id}")
+            from app.utils.pymupdf_extractor import extract_text_with_pymupdf # Temp import
+            full_text, _ = extract_text_with_pymupdf(file_path)
+            if not full_text:
+                logger.error(f"Could not get full text for Mermaid generation for paper {paper.id}")
+                paper.error = "Failed to retrieve text for visualization generation."
+                paper.status = PaperStatus.FAILED
+                PaperDatabase.update_paper(paper)
+                return False
+
+        mermaid_syntax = await viz_generator.generate_mermaid_via_ai(
+            paper_text=full_text,
+            paper_type=paper.paper_type
         )
         
-        if "error" in viz_data:
-            logger.error(f"Error generating visualization: {viz_data['error']}")
-            paper.error = f"Visualization error: {viz_data['error']}"
-            PaperDatabase.update_paper(paper)
-            return False
-        
-        # Create visualization model and save it to paper
-        visualization = Visualization(
+        # Store the AI-generated Mermaid diagram
+        paper.visualization = Visualization(
             paper_id=paper.id,
-            diagram_type=viz_data.get("diagram_type", "mermaid"),
-            diagram_data=viz_data.get("diagram_data", ""),
-            component_mapping=viz_data.get("component_mapping", {})
+            diagram_type="mermaid",
+            diagram_data=mermaid_syntax,
+            # Component mapping might be irrelevant if diagram is AI-generated text
+            component_mapping={}
         )
         
-        paper.visualization = visualization
-        
-        # Update the paper in the database
+        # --- Post-Visualization: Extract Relationships (Optional/Separate?) ---
+        # We could still run the component-based relationship extraction here 
+        # to populate the paper.relationships field if needed elsewhere, 
+        # even though the primary viz doesn't use it directly.
+        relationship_service = RelationshipExtractionService() # Assuming separate instance is okay
+        paper.relationships = await relationship_service.extract_relationships(
+            paper_id=paper.id,
+            paper_type=paper.paper_type,
+            components=paper.components,
+            paper_text=full_text # Pass full text here too? Or is component-only better?
+        )
+        logger.info(f"Extracted {len(paper.relationships)} relationships after visualization generation.")
+
+        # Update the paper in the database with all data
         PaperDatabase.update_paper(paper)
-        
-        return True
-        
+        return True # Success
+
     except Exception as e:
-        logger.exception(f"Critical error in process_paper for {paper.id}: {e}") # Log traceback
+        logger.exception(f"Critical error in process_paper for {paper.id}: {e}")
         paper.error = f"Unexpected error during processing: {e}"
+        # Ensure status is set to FAILED on critical error
+        paper.status = PaperStatus.FAILED
         PaperDatabase.update_paper(paper)
         return False
 

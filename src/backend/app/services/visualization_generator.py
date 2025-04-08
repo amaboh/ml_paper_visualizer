@@ -1,10 +1,59 @@
-from app.core.models import Visualization, Component, Relationship, ComponentType
+from app.core.models import Visualization, Component, Relationship, ComponentType, PaperType
 from app.utils.ai_processor import AIProcessor
 from typing import List, Dict, Any, Optional
 import logging
 import json
+import re # Import regex module
 
 logger = logging.getLogger(__name__)
+
+# Prompt for AI-driven Mermaid Diagram Generation
+MERMAID_GENERATION_PROMPT = """
+You are an expert in analyzing machine learning research papers and generating detailed Mermaid flowchart diagrams to represent their workflow and structure.
+
+**Task:**
+Read the following paper text and create a comprehensive Mermaid `flowchart TD` diagram. The diagram should clearly illustrate the paper's key contributions, including:
+1.  **Overall Architecture:** Use `subgraph` for major sections like Architecture, Training, Evaluation, Components.
+2.  **Model Hierarchy:** Use nested `subgraph` blocks for model components (e.g., Encoder/Decoder Stacks, Layers, Sub-layers like Multi-Head Attention, FFN).
+3.  **Data Flow:** Show the sequence of data processing and usage (e.g., Dataset -> Preprocessing -> Model Input).
+4.  **Training Details:** Include important parameters, optimizers, learning rate schedules, hardware used.
+5.  **Evaluation:** Show metrics used and key results reported.
+6.  **Key Mechanisms:** Detail important algorithms or components like Attention mechanisms within their own subgraphs if appropriate.
+
+**Example Output Structure (Illustrative - Adapt based on paper content):**
+
+```mermaid
+flowchart TD
+    subgraph Paper["Paper Title (e.g., Attention Is All You Need)"]
+        subgraph DataProcessing["Data Processing"]
+            Dataset[WMT 2014 En-De] --> BPE[Byte-Pair Encoding]
+        end
+        subgraph Architecture["Transformer Architecture"]
+            BPE --> InputEmb[Input Embeddings + Positional Encoding]
+            InputEmb --> Encoder[Encoder Stack N=6]
+            Encoder --> Decoder[Decoder Stack N=6]
+            Decoder --> LinearLayer[Linear + Softmax]
+            LinearLayer --> OutputProbs[Output Probabilities]
+        end
+        subgraph EncoderDetails[Encoder Layer Details]
+             MHA[Multi-Head Self-Attention] --> AddNorm1[Add & Norm]
+             AddNorm1 --> FFN[Feed-Forward Network]
+             FFN --> AddNorm2[Add & Norm]
+        end
+        // ... other subgraphs for Decoder Details, Training, Evaluation etc. ...
+    end
+```
+
+**Output Requirements:**
+- Your output MUST be ONLY the raw Mermaid syntax string.
+- Start the output directly with `flowchart TD`.
+- Enclose the entire Mermaid syntax within a single markdown code block: ```mermaid ... ```.
+- Do NOT include any other text, explanations, or introductions before or after the code block.
+
+**Paper Text:**
+
+{paper_text}
+"""
 
 class VisualizationGenerator:
     """
@@ -296,3 +345,56 @@ class VisualizationGenerator:
         )
         
         return visualization
+
+    async def generate_mermaid_via_ai(self, paper_text: str, paper_type: PaperType) -> str:
+        """Generates Mermaid diagram syntax directly using an AI prompt."""
+        logger.info("Attempting to generate Mermaid diagram via AI.")
+        try:
+            # Truncate text if needed (adjust as necessary)
+            # Consider a larger limit as this is the primary input now
+            max_chars = 25000 
+            truncated_text = paper_text[:max_chars] if len(paper_text) > max_chars else paper_text
+
+            prompt = MERMAID_GENERATION_PROMPT.format(paper_text=truncated_text)
+            
+            logger.debug(f"Sending Mermaid generation prompt (first 300 chars): {prompt[:300]}...")
+            
+            # Use process_text, expect text/markdown output
+            response_str = await self.ai_processor.process_text(
+                prompt=prompt,
+                model="gpt-4-turbo", # Use a powerful model if possible
+                max_tokens=3000,     # Allow ample tokens for complex diagrams
+                temperature=0.1      # Low temp for more deterministic structure
+            )
+
+            if not response_str or response_str.startswith('{"error":'):
+                logger.error(f"AI Processor failed or returned error during Mermaid generation: {response_str}")
+                return self._generate_error_mermaid("AI processing failed")
+
+            # Extract content from the markdown code block
+            match = re.search(r"```(?:mermaid)?\s*([\s\S]*?)\s*```", response_str, re.MULTILINE)
+            if match:
+                mermaid_syntax = match.group(1).strip()
+                logger.info(f"Successfully extracted Mermaid syntax from AI response (length: {len(mermaid_syntax)}).")
+                # Basic validation: Check if it starts reasonably
+                if not mermaid_syntax.strip().startswith("flowchart"):
+                     logger.warning("Extracted content doesn't look like Mermaid flowchart syntax.")
+                     return self._generate_error_mermaid("AI response did not contain valid Mermaid flowchart syntax")
+                return mermaid_syntax
+            else:
+                logger.error("Could not find Mermaid markdown code block in AI response.")
+                logger.debug(f"Full AI response for Mermaid gen: {response_str}")
+                return self._generate_error_mermaid("AI response format incorrect (missing Mermaid block)")
+
+        except Exception as e:
+            logger.error(f"Error during AI Mermaid generation: {e}", exc_info=True)
+            return self._generate_error_mermaid(f"Unexpected error: {e}")
+
+    def _generate_error_mermaid(self, error_message: str) -> str:
+        """Generates a simple Mermaid diagram indicating an error."""
+        escaped_message = error_message.replace('"', '#quot;')
+        return f"""flowchart TD
+    A[Error Generating Visualization] --> B("{escaped_message}");
+    classDef error fill:#f9f,stroke:#333,stroke-width:2px;
+    class A,B error;
+"""
