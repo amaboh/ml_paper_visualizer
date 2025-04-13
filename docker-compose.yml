@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      # The Next.js app needs to know the backend URL
+      # This assumes the backend is reachable via http://backend:8000 from within the Docker network
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      # NEXT_TELEMETRY_DISABLED: 1 # Already set in Dockerfile, but can be overridden here if needed
+    depends_on:
+      - backend
+    networks:
+      - ml_visualizer_net
+
+  backend:
+    build:
+      context: ./src/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Pass the OpenAI API Key from a .env file in the root directory
+      # Ensure you have a .env file in the same directory as docker-compose.yml
+      # with the line: OPENAI_API_KEY=your_actual_api_key
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    # If you need volumes for persistent data or development:
+    # volumes:
+    #   - ./src/backend:/app # Mount local backend code for development (optional)
+    networks:
+      - ml_visualizer_net
+
+networks:
+  ml_visualizer_net:
+    driver: bridge

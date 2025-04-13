@@ -51,22 +51,26 @@ ml_paper_visualizer/
 ### Backend Setup
 
 1. Navigate to the backend directory:
+
    ```
    cd ml_paper_visualizer/backend
    ```
 
 2. Create a virtual environment:
+
    ```
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. Install dependencies:
+
    ```
    pip install -r requirements.txt
    ```
 
 4. Set up environment variables:
+
    ```
    # Create a .env file with the following variables
    OPENAI_API_KEY=your_openai_api_key
@@ -80,11 +84,13 @@ ml_paper_visualizer/
 ### Frontend Setup
 
 1. Navigate to the frontend directory:
+
    ```
    cd ml_paper_visualizer/frontend
    ```
 
 2. Install dependencies:
+
    ```
    npm install
    # or
@@ -92,6 +98,7 @@ ml_paper_visualizer/
    ```
 
 3. Run the development server:
+
    ```
    npm run dev
    # or
@@ -99,6 +106,54 @@ ml_paper_visualizer/
    ```
 
 4. Open [http://localhost:3000](http://localhost:3000) in your browser to see the application.
+
+## Running with Docker (Recommended)
+
+This is the recommended way to run the application as it handles dependencies and setup within isolated containers.
+
+### Prerequisites
+
+- Docker ([Install Docker](https://docs.docker.com/get-docker/))
+- Docker Compose ([Usually included with Docker Desktop](https://docs.docker.com/compose/install/))
+
+### Setup
+
+1.  **Environment Variables:** Create a `.env` file in the project root directory (the same directory as `docker-compose.yml`). Add your OpenAI API key to this file:
+
+    ```
+    OPENAI_API_KEY=your_actual_openai_api_key
+    ```
+
+    _Important:_ Ensure `.env` is listed in your root `.gitignore` file to prevent committing secrets.
+
+2.  **Frontend API URL:** The frontend service in `docker-compose.yml` is configured to connect to the backend at `http://backend:8000`. Ensure your frontend code uses `process.env.NEXT_PUBLIC_API_URL` to make API calls.
+
+### Build and Run
+
+1.  Navigate to the project root directory in your terminal.
+2.  Run the following command to build the images and start the containers:
+
+    ```bash
+    docker compose up --build
+    ```
+
+    To run the containers in the background (detached mode), use:
+
+    ```bash
+    docker compose up --build -d
+    ```
+
+3.  **Accessing the Application:**
+    - Frontend: Open [http://localhost:3000](http://localhost:3000) in your browser.
+    - Backend API Docs: Open [http://localhost:8000/docs](http://localhost:8000/docs).
+
+### Stopping the Application
+
+To stop the containers, run the following command in the project root directory:
+
+```bash
+docker compose down
+```
 
 ## Usage
 
@@ -140,7 +195,7 @@ npm test
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on how to get started, report bugs, and suggest enhancements.
 
 ## License
 
