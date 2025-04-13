@@ -20,6 +20,12 @@ Read the following paper text and create a comprehensive Mermaid `flowchart TD` 
 5.  **Evaluation:** Show metrics used and key results reported.
 6.  **Key Mechanisms:** Detail important algorithms or components like Attention mechanisms within their own subgraphs if appropriate.
 
+**Syntax Guidelines:**
+- Use simple, alphanumeric node IDs (e.g., `A`, `B`, `Node1`).
+- Enclose node text containing special characters or spaces in double quotes (e.g., `A["Node Text with Spaces"]`).
+- Use standard Mermaid link syntax (`-->`, `-.->`, `-- text -->`).
+- Ensure all `subgraph` blocks are properly closed with `end`.
+
 **Example Output Structure (Illustrative - Adapt based on paper content):**
 
 ```mermaid

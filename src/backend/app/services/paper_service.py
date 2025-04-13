@@ -2,7 +2,7 @@ from app.services.paper_parser import PaperParser
 from app.services.ai_extraction_service import AIExtractionService
 from app.services.visualization_generator import VisualizationGenerator
 from app.services.relationship_extraction import RelationshipExtractionService
-from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization, Section, ComponentType, PaperType
+from app.core.models import Paper, PaperStatus, PaperDatabase, Visualization, Section, ComponentType, PaperType, Component, Relationship
 from fastapi import UploadFile
 import os
 import aiofiles
@@ -11,6 +11,8 @@ import requests
 import logging
 from typing import Optional, Tuple, Dict, Any, List
 from app.utils.pdf_extractors import PDFExtractor, PyMuPDFExtractor, MistralOCRExtractor
+from app.utils.ai_processor import AIProcessor
+from app.utils.pymupdf_extractor import extract_text_with_pymupdf
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +197,6 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
             # If not in diagnostics, re-extract (inefficient but necessary for now)
             # This dependency suggests maybe text extraction should happen directly in process_paper
             logger.warning(f"Re-extracting text for Mermaid generation for paper {paper.id}")
-            from app.utils.pymupdf_extractor import extract_text_with_pymupdf # Temp import
             full_text, _ = extract_text_with_pymupdf(file_path)
             if not full_text:
                 logger.error(f"Could not get full text for Mermaid generation for paper {paper.id}")
@@ -209,31 +210,66 @@ async def process_paper(paper: Paper, file_path: str) -> bool:
             paper_type=paper.paper_type
         )
         
-        # Store the AI-generated Mermaid diagram
-        paper.visualization = Visualization(
-            paper_id=paper.id,
-            diagram_type="mermaid",
-            diagram_data=mermaid_syntax,
-            # Component mapping might be irrelevant if diagram is AI-generated text
-            component_mapping={}
-        )
-        
-        # --- Post-Visualization: Extract Relationships (Optional/Separate?) ---
-        # We could still run the component-based relationship extraction here 
-        # to populate the paper.relationships field if needed elsewhere, 
-        # even though the primary viz doesn't use it directly.
-        relationship_service = RelationshipExtractionService() # Assuming separate instance is okay
-        paper.relationships = await relationship_service.extract_relationships(
-            paper_id=paper.id,
-            paper_type=paper.paper_type,
-            components=paper.components,
-            paper_text=full_text # Pass full text here too? Or is component-only better?
-        )
-        logger.info(f"Extracted {len(paper.relationships)} relationships after visualization generation.")
+        # Basic validation of AI-generated syntax
+        is_ai_syntax_valid = mermaid_syntax and mermaid_syntax.strip().startswith("flowchart")
 
-        # Update the paper in the database with all data
+        if is_ai_syntax_valid:
+            logger.info(f"AI-generated Mermaid syntax seems valid for paper {paper.id}.")
+            # Store the AI-generated Mermaid diagram
+            paper.visualization = Visualization(
+                paper_id=paper.id,
+                diagram_type="mermaid",
+                diagram_data=mermaid_syntax,
+                # Component mapping might be irrelevant if diagram is AI-generated text
+                component_mapping={}
+            )
+        else:
+            logger.warning(f"AI-generated Mermaid syntax failed validation for paper {paper.id}. Falling back to component-based generation.")
+            # Fallback: Use component-based generation
+            # Ensure components and relationships are available
+            if not paper.components:
+                logger.error(f"Cannot fallback: Components not found for paper {paper.id}")
+                paper.error = "Visualization generation failed: AI output invalid and no components for fallback."
+                paper.status = PaperStatus.FAILED
+                PaperDatabase.update_paper(paper)
+                return False
+
+            # Extract relationships if not already done (assuming relationship extraction happens after component extraction)
+            relationship_service = RelationshipExtractionService()
+            paper.relationships = await relationship_service.extract_relationships(
+                paper.components, extraction_result.get("diagnostics", {}).get("full_text_extracted", "")
+            )
+
+            viz_data = viz_generator.generate_mermaid_diagram(
+                paper.components, paper.relationships
+            )
+
+            if "error" in viz_data:
+                logger.error(f"Fallback diagram generation failed: {viz_data['error']}")
+                paper.error = f"Visualization generation failed: Fallback error - {viz_data['error']}"
+                paper.status = PaperStatus.FAILED
+            else:
+                paper.visualization = Visualization(
+                    paper_id=paper.id,
+                    diagram_type="mermaid",
+                    diagram_data=viz_data["diagram_data"],
+                    component_mapping=viz_data["component_mapping"]
+                )
+                # Optionally update diagnostics to indicate fallback was used
+                if paper.diagnostics:
+                    paper.diagnostics["visualization_method"] = "fallback_component_based"
+                else:
+                    paper.diagnostics = {"visualization_method": "fallback_component_based"}
+
+        # --- Post-Visualization Update --- #
+
+        if paper.status != PaperStatus.FAILED:
+            paper.status = PaperStatus.COMPLETED
+            paper.error = None # Clear any previous transient errors
+
         PaperDatabase.update_paper(paper)
-        return True # Success
+        logger.info(f"Paper processing completed for {paper.id} with status: {paper.status.name}")
+        return paper.status == PaperStatus.COMPLETED
 
     except Exception as e:
         logger.exception(f"Critical error in process_paper for {paper.id}: {e}")

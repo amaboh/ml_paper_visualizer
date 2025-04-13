@@ -56,10 +56,11 @@ async def shutdown_event():
     logger.info("AIProcessor resources cleaned up")
 
 # Import and include routers
-from app.routers import papers, workflow, visualization
+from app.routers import papers, workflow, visualization, examples
 app.include_router(papers.router, prefix="/api/papers", tags=["papers"])
 app.include_router(workflow.router, prefix="/api/workflow", tags=["workflow"])
 app.include_router(visualization.router, prefix="/api/visualization", tags=["visualization"])
+app.include_router(examples.router, prefix="/api", tags=["Examples"])
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

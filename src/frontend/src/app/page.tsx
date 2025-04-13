@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Upload,
   Input,
@@ -39,6 +39,33 @@ export default function Home(): React.ReactNode {
   const [selectedParser, setSelectedParser] = useState<string>(
     parserOptions[0].id
   );
+  const [examplePapers, setExamplePapers] = useState<any[]>([]);
+  const [examplesLoading, setExamplesLoading] = useState<boolean>(true);
+  const [examplesError, setExamplesError] = useState<string>("");
+
+  useEffect(() => {
+    const fetchExamples = async () => {
+      setExamplesLoading(true);
+      setExamplesError("");
+      try {
+        const response = await fetch("/api/examples");
+        if (!response.ok) {
+          throw new Error("Failed to fetch example papers");
+        }
+        const data = await response.json();
+        setExamplePapers(data);
+      } catch (err) {
+        setExamplesError(
+          err instanceof Error ? err.message : "Unknown error fetching examples"
+        );
+        console.error(err);
+      } finally {
+        setExamplesLoading(false);
+      }
+    };
+
+    fetchExamples();
+  }, []);
 
   const handleFileUpload = async (file: File): Promise<void> => {
     setLoading(true);
@@ -172,6 +199,10 @@ export default function Home(): React.ReactNode {
     }
   };
 
+  const handleExampleClick = (id: string) => {
+    router.push(`/visualization/${id}`);
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow">
@@ -250,44 +281,42 @@ export default function Home(): React.ReactNode {
                     </form>
                   )}
 
-                  <div className="mt-4 border-t pt-4">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">
+                  <div className="mt-6 border-t pt-6">
+                    <h3 className="text-lg font-medium text-gray-900 mb-3">
                       PDF Parsing Method:
-                    </h4>
-                    <div className="space-y-2">
+                    </h3>
+                    <div className="space-y-3">
                       {parserOptions.map((option) => (
                         <label
                           key={option.id}
-                          className="flex items-center space-x-2 p-2 border rounded-md hover:bg-gray-50 cursor-pointer"
+                          className="flex items-start p-3 border rounded-md hover:bg-gray-50 cursor-pointer"
                         >
                           <input
                             type="radio"
-                            name="parserType"
+                            name="parserMethod"
                             value={option.id}
                             checked={selectedParser === option.id}
                             onChange={() => setSelectedParser(option.id)}
-                            className="form-radio h-4 w-4 text-indigo-600"
-                            disabled={loading}
+                            className="mt-1 mr-3 h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500"
                           />
                           <div>
-                            <span className="block text-sm font-medium text-gray-900">
+                            <span className="font-medium text-gray-800">
                               {option.label}
                             </span>
-                            <span className="block text-xs text-gray-500">
+                            <p className="text-sm text-gray-500">
                               {option.description}
-                            </span>
+                            </p>
                           </div>
                         </label>
                       ))}
                     </div>
                   </div>
 
-                  <div className="mt-6 text-center border-t pt-6">
+                  <div className="mt-6 border-t pt-6 text-center">
                     <Button
+                      variant="outline"
                       onClick={handleSamplePaper}
                       disabled={createSampleLoading}
-                      variant="outline"
-                      className="mx-auto"
                     >
                       {createSampleLoading ? (
                         <Spinner size="sm" />
@@ -299,36 +328,34 @@ export default function Home(): React.ReactNode {
                 </div>
               </Card>
 
-              <div className="mt-10">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">
+              <div className="mt-12">
+                <h3 className="text-xl font-semibold text-gray-900 mb-4">
                   Example Papers
                 </h3>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Card
-                    title="CNN for Image Classification"
-                    onClick={() => {
-                      setUrl("https://arxiv.org/pdf/1512.03385.pdf");
-                      setActiveTab("url");
-                    }}
-                    className="cursor-pointer hover:shadow-md transition-shadow"
-                  >
-                    <p className="text-sm text-gray-600">
-                      Deep Residual Learning for Image Recognition
-                    </p>
-                  </Card>
-                  <Card
-                    title="Transformer Architecture"
-                    onClick={() => {
-                      setUrl("https://arxiv.org/pdf/1706.03762.pdf");
-                      setActiveTab("url");
-                    }}
-                    className="cursor-pointer hover:shadow-md transition-shadow"
-                  >
-                    <p className="text-sm text-gray-600">
-                      Attention Is All You Need
-                    </p>
-                  </Card>
-                </div>
+                {examplesLoading && <Spinner />}
+                {examplesError && (
+                  <Alert type="error" message={examplesError} />
+                )}
+                {!examplesLoading && !examplesError && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {examplePapers.map((paper) => (
+                      <Card
+                        key={paper.id}
+                        className="hover:shadow-md transition-shadow cursor-pointer"
+                        onClick={() => handleExampleClick(paper.id)}
+                      >
+                        <div className="p-6">
+                          <h4 className="font-semibold text-lg mb-2">
+                            {paper.title}
+                          </h4>
+                          <p className="text-gray-600 text-sm">
+                            {paper.description}
+                          </p>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
