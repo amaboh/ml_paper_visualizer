@@ -2,6 +2,8 @@
 
 A tool for visualizing ML model development processes from research papers, inspired by GitDiagram.
 
+![ML Paper Visualizer Demo](src/frontend/public/mil_viz_gif2.gif)
+
 ## Overview
 
 ML Paper Visualizer is an application that enables researchers and ML enthusiasts to easily understand the model development process in research papers. It automatically extracts and visualizes the complete ML workflow from data collection through preprocessing, modeling, to results evaluation.
