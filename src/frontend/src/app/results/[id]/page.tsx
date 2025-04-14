@@ -128,6 +128,7 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
   const [pollingTimer, setPollingTimer] = useState<NodeJS.Timeout | null>(null);
   const [d3Data, setD3Data] = useState<D3Data | null>(null);
   const [mermaidChart, setMermaidChart] = useState<string>("");
+  const [simpleSvgString, setSimpleSvgString] = useState<string>("");
   const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [settings, setSettings] = useState<VisualizationSettings>({
@@ -201,9 +202,8 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
         // If completed, stop loading
         if (data.status === "completed") {
           setLoading(false);
-
-          // Fetch visualization data
-          await fetchVisualizationData();
+          // Fetch visualization data (including SVG)
+          fetchVisualizationData(); // No await needed here
         } else if (data.status === "processing") {
           // For processing, we show the visualization with processing state
           // but keep polling for updates
@@ -223,13 +223,13 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
 
               // If status changed, update the paper data
               if (statusData.status !== paperData?.status) {
-                // If new status is completed, fetch the full paper data
+                // If new status is completed, fetch the full paper data & viz data
                 if (statusData.status === "completed") {
                   const paperResponse = await fetch(`/api/papers/${id}`);
                   if (paperResponse.ok) {
                     const newPaperData = await paperResponse.json();
                     setPaperData(newPaperData);
-                    await fetchVisualizationData();
+                    fetchVisualizationData(); // Fetch viz data too
                   }
                 } else if (
                   statusData.status === "failed" ||
@@ -307,24 +307,35 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
     fetchPaperData();
   }, [id, retryCount]);
 
-  // Fetch visualization data
+  // Fetch visualization data (including SVG)
   const fetchVisualizationData = async () => {
     try {
       // Fetch D3 visualization data
-      const d3Response = await fetch(`/api/visualization/${id}/d3`);
-      if (d3Response.ok) {
-        const d3Data = await d3Response.json();
-        setD3Data(d3Data);
-      }
-
+      const d3Promise = fetch(`/api/visualization/${id}/d3`).then((res) =>
+        res.ok ? res.json() : null
+      );
       // Fetch Mermaid visualization data
-      const mermaidResponse = await fetch(`/api/visualization/${id}/mermaid`);
-      if (mermaidResponse.ok) {
-        const mermaidData = await mermaidResponse.json();
-        setMermaidChart(mermaidData.diagram_data);
-      }
+      const mermaidPromise = fetch(`/api/visualization/${id}/mermaid`).then(
+        (res) => (res.ok ? res.json() : null)
+      );
+      // Fetch Simple SVG visualization data
+      const svgPromise = fetch(`/api/visualization/${id}/simple_svg`).then(
+        (res) => (res.ok ? res.text() : null)
+      );
+
+      // Await all promises
+      const [d3Result, mermaidResult, svgResult] = await Promise.all([
+        d3Promise,
+        mermaidPromise,
+        svgPromise,
+      ]);
+
+      if (d3Result) setD3Data(d3Result);
+      if (mermaidResult) setMermaidChart(mermaidResult.diagram_data);
+      if (svgResult) setSimpleSvgString(svgResult);
     } catch (error) {
       console.error("Error fetching visualization data:", error);
+      // Optionally set an error state for visualization loading
     }
   };
 
@@ -688,15 +699,42 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
           )}
         </div>
       );
-    } else {
-      // Fallback to simple visualization
+    } else if (visualizationType === "simple") {
       return (
         <SimpleVisualization
+          svgString={simpleSvgString}
+          isProcessing={isProcessing}
           components={paperData?.components || []}
           relationships={paperData?.relationships || []}
           onNodeClick={handleNodeClick}
-          isProcessing={isProcessing}
         />
+      );
+    } else {
+      if (simpleSvgString) {
+        return (
+          <SimpleVisualization
+            svgString={simpleSvgString}
+            isProcessing={isProcessing}
+            components={paperData?.components || []}
+            relationships={paperData?.relationships || []}
+            onNodeClick={handleNodeClick}
+          />
+        );
+      }
+      if (paperData?.components) {
+        return (
+          <SimpleVisualization
+            components={paperData.components}
+            relationships={paperData.relationships || []}
+            onNodeClick={handleNodeClick}
+            isProcessing={isProcessing}
+          />
+        );
+      }
+      return (
+        <div className="p-4 text-center text-gray-500">
+          Select a view type or wait for data.
+        </div>
       );
     }
   };
@@ -1096,17 +1134,36 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
               <Card className="overflow-hidden">
                 <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
                   <h3 className="font-medium">ML Workflow Visualization</h3>
-                  <div className="flex items-center space-x-2">
-                    <label className="text-sm text-gray-600">View:</label>
-                    <select
-                      value={visualizationType}
-                      onChange={(e) => setVisualizationType(e.target.value)}
-                      className="text-sm border rounded px-2 py-1"
+                  <div className="flex items-center space-x-1">
+                    <Button
+                      size="sm"
+                      variant={
+                        visualizationType === "d3" ? "secondary" : "outline"
+                      }
+                      onClick={() => setVisualizationType("d3")}
                     >
-                      <option value="d3">Interactive Graph</option>
-                      <option value="mermaid">Flow Diagram</option>
-                      <option value="simple">Simple View</option>
-                    </select>
+                      Interactive Graph
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={
+                        visualizationType === "mermaid"
+                          ? "secondary"
+                          : "outline"
+                      }
+                      onClick={() => setVisualizationType("mermaid")}
+                    >
+                      Flow Diagram
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={
+                        visualizationType === "simple" ? "secondary" : "outline"
+                      }
+                      onClick={() => setVisualizationType("simple")}
+                    >
+                      Simple View
+                    </Button>
                   </div>
                 </div>
                 <div className="p-4 h-[600px]" ref={visualizationRef}>

@@ -80,4 +80,5 @@ Open an issue on the GitHub repository with the label `bug`.
 
 Currently, discussions primarily happen via GitHub Issues and Pull Requests.
 
+
 _(Optional: Add links to other community channels like Discord, Slack, Gitter, mailing list if they exist)_

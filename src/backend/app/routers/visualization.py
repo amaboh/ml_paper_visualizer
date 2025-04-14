@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Path, HTTPException, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Dict, Any, Optional, List
-from app.core.models import Visualization, VisualizationSettings, Paper, PaperStatus, ComponentType, PaperDatabase
+from app.core.models import Visualization, VisualizationSettings, Paper, PaperStatus, ComponentType, PaperDatabase, Component, Relationship
+from app.services.visualization_generator import VisualizationGenerator
 
 router = APIRouter()
 
@@ -414,3 +415,33 @@ async def get_d3_visualization(
         "hierarchical_nodes": hierarchical_nodes,  # Top-level nodes with children
         "is_minimal": len(paper.components) == 1  # Flag if this is just a minimal component
     }
+
+@router.get("/{paper_id}/simple_svg", response_class=PlainTextResponse)
+async def get_simple_svg_visualization(
+    paper_id: str = Path(..., description="The ID of the paper")
+):
+    """
+    Get a simple SVG representation of the paper's ML workflow.
+    """
+    paper = PaperDatabase.get_paper(paper_id)
+    
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    if paper.status != PaperStatus.COMPLETED:
+        # Allow generating even if processing, but might be incomplete
+        if paper.status != PaperStatus.PROCESSING:
+             raise HTTPException(status_code=400, detail=f"Paper cannot be visualized (status: {paper.status})")
+    
+    if not paper.components:
+        # Return an SVG indicating no components
+        return PlainTextResponse(
+            content='<svg width="300" height="100" xmlns="http://www.w3.org/2000/svg"><text x="10" y="50" fill="#cc0000">No components extracted for this paper.</text></svg>',
+            media_type="image/svg+xml"
+        )
+        
+    # Instantiate the generator and create SVG
+    viz_generator = VisualizationGenerator()
+    svg_string = viz_generator.generate_simple_svg(paper.components, paper.relationships or [])
+    
+    return PlainTextResponse(content=svg_string, media_type="image/svg+xml")

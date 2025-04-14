@@ -554,7 +554,7 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
     <div className="relative">
       <svg ref={svgRef} className="w-full border rounded-md"></svg>
       {hoveredNode && (
-        <div className="absolute top-0 right-0 bg-white p-3 shadow-lg rounded-md text-sm max-w-xs">
+        <div className="absolute top-0 right-0 bg-white p-3 shadow-lg rounded-md text-sm max-w-xs text-gray-900">
           <div className="flex items-center justify-between">
             <h4 className="font-bold">{hoveredNode.name}</h4>
             {hoveredNode.is_novel && (
@@ -564,7 +564,7 @@ const D3Visualization: React.FC<D3VisualizationProps> = ({
             )}
           </div>
           <p className="text-gray-600 text-xs">{hoveredNode.type}</p>
-          <p className="mt-1">{hoveredNode.description}</p>
+          <p className="mt-1 text-gray-900">{hoveredNode.description}</p>
 
           {/* Show metrics if available */}
           {hoveredNode.metrics &&

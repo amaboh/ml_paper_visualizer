@@ -261,26 +261,36 @@ class VisualizationGenerator:
         try:
             # Create nodes
             nodes = []
+            node_ids = set() # Keep track of valid node IDs
             for component in components:
                 nodes.append({
                     "id": component.id,
                     "name": component.name,
-                    "type": component.type.value,
+                    "type": component.type.value if hasattr(component.type, 'value') else component.type, # Handle potential string type
                     "description": component.description,
                     "details": component.details,
                     "source_section": component.source_section,
-                    "source_page": component.source_page
+                    "source_page": component.source_page,
+                    # Add novelty and importance if they exist
+                    "is_novel": getattr(component, 'is_novel', False),
+                    "importance": getattr(component, 'importance', None),
                 })
+                node_ids.add(component.id)
             
             # Create links
             links = []
-            for relationship in relationships:
-                links.append({
-                    "source": relationship.source_id,
-                    "target": relationship.target_id,
-                    "type": relationship.type,
-                    "description": relationship.description
-                })
+            if relationships:
+                for relationship in relationships:
+                    # Ensure both source and target nodes actually exist in the current node list
+                    if relationship.source_id in node_ids and relationship.target_id in node_ids:
+                        links.append({
+                            "source": relationship.source_id,
+                            "target": relationship.target_id,
+                            "type": relationship.type,
+                            "description": relationship.description
+                        })
+                    else:
+                        logger.warning(f"Skipping relationship {relationship.id} because source or target node not found in provided components.")
             
             d3_data = {
                 "nodes": nodes,
@@ -404,3 +414,106 @@ class VisualizationGenerator:
     classDef error fill:#f9f,stroke:#333,stroke-width:2px;
     class A,B error;
 """
+
+    def generate_simple_svg(self, components: List[Component], relationships: List[Relationship]) -> str:
+        """Generates a simple SVG representation of the workflow with descriptions and novelty highlights."""
+        if not components:
+            return '<svg width="300" height="100" xmlns="http://www.w3.org/2000/svg"><text x="10" y="50" fill="#cc0000">No components found to visualize.</text></svg>'
+
+        # Basic SVG setup - Increased height and adjusted spacing
+        width = 600
+        box_width = 250 # Made wider to potentially accommodate more text
+        box_height = 80  # Increased height for description
+        v_spacing = 50 # Increased vertical space between boxes
+        total_height = len(components) * (box_height + v_spacing) + v_spacing 
+
+        svg_elements = []
+        component_coords = {}
+
+        # Define colors using string literals matching enum values as keys
+        type_colors = {
+            "data_collection": ("#e8f5e9", "#388e3c"),
+            "preprocessing": ("#e1f5fe", "#0288d1"),
+            "data_partition": ("#fff3e0", "#f57c00"),
+            "model": ("#ffebee", "#d32f2f"),
+            "training": ("#f3e5f5", "#7b1fa2"),
+            "evaluation": ("#fce4ec", "#c2185b"),
+            "results": ("#e0f7fa", "#0097a7"),
+            "other": ("#f5f5f5", "#616161")
+        }
+        novel_border_color = "#FFC107" # Gold/Amber for novel components
+        novel_stroke_width = "2.5"
+        default_stroke_width = "1.5"
+
+        # Create component groups (rect + text)
+        for i, comp in enumerate(components):
+            x = (width - box_width) / 2
+            y = v_spacing + i * (box_height + v_spacing)
+            
+            is_novel = hasattr(comp, 'is_novel') and comp.is_novel
+            bg_color, default_border = type_colors.get(comp.type, type_colors["other"])
+            current_border_color = novel_border_color if is_novel else default_border
+            current_stroke_width = novel_stroke_width if is_novel else default_stroke_width
+
+            component_coords[comp.id] = {
+                'top_center': (x + box_width / 2, y),
+                'bottom_center': (x + box_width / 2, y + box_height)
+            }
+
+            # --- Wrap component elements in a group (<g>) with data-component-id --- 
+            svg_elements.append(f'<g data-component-id="{comp.id}" style="cursor: pointer;">')
+            
+            # Rectangle with conditional novel styling
+            svg_elements.append(
+                f'  <rect x="{x}" y="{y}" width="{box_width}" height="{box_height}" \n'
+                f'      rx="8" ry="8" fill="{bg_color}" stroke="{current_border_color}" stroke-width="{current_stroke_width}" />'
+            )
+            
+            # Add Novel label if applicable
+            if is_novel:
+                 svg_elements.append(
+                    f'  <text x="{x + box_width - 10}" y="{y + 15}" font-family="Arial, sans-serif" font-size="10" text-anchor="end" fill="#b45309" font-weight="bold" pointer-events="none">Novel</text>'
+                 )
+
+            # Text - Name (Title)
+            text_name = (comp.name[:30] + '...') if len(comp.name) > 33 else comp.name
+            svg_elements.append(
+                f'  <text x="{x + box_width / 2}" y="{y + 25}" dy="0" \n'
+                f'      font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#333" pointer-events="none">{text_name}</text>'
+            )
+            # Text - Description (Truncated)
+            text_desc = comp.description or ""
+            text_desc = (text_desc[:60] + '...') if len(text_desc) > 63 else text_desc
+            svg_elements.append(
+                f'  <text x="{x + box_width / 2}" y="{y + 50}" dy=".3em" \n'
+                f'      font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="#555" pointer-events="none">{text_desc}</text>'
+            )
+            
+            svg_elements.append('</g>') # Close the group
+            # --- End of group --- 
+
+        # Create relationship lines (using updated coords)
+        for i in range(len(components) - 1):
+            comp1_id = components[i].id
+            comp2_id = components[i+1].id
+            if comp1_id in component_coords and comp2_id in component_coords:
+                x1, y1 = component_coords[comp1_id]['bottom_center']
+                x2, y2 = component_coords[comp2_id]['top_center']
+                svg_elements.append(
+                    f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="#aaa" stroke-width="2" marker-end="url(#arrowhead)" />'
+                )
+                
+        # SVG Header and Defs (no changes needed here)
+        svg_header = (
+           f'<svg width="{width}" height="{total_height}" xmlns="http://www.w3.org/2000/svg" style="background-color: #f8f9fa;">\n' # Added background color
+           f'  <defs>\n'
+           f'    <marker id="arrowhead" viewBox="0 -5 10 10" refX="5" refY="0" markerWidth="6" markerHeight="6" orient="auto">\n'
+           f'      <path d="M0,-5L10,0L0,5" fill="#aaa"/>\n' # Slightly darker arrow
+           f'    </marker>\n'
+           f'  </defs>\n'
+        )
+
+        svg_content = "\n".join(svg_elements)
+        svg_footer = "</svg>"
+
+        return svg_header + svg_content + svg_footer
