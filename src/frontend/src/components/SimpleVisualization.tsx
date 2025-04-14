@@ -7,45 +7,136 @@ interface SimpleVisualizationProps {
   components: any[];
   relationships: any[];
   onNodeClick?: (nodeId: string) => void;
+  onComponentClick?: (componentData: any) => void;
   isProcessing?: boolean;
   svgString?: string;
 }
+
+// Add additional logging function
+const logDebug = (message: string, data?: any) => {
+  console.log(
+    `[SimpleVisualization] ${message}`,
+    data !== undefined ? data : ""
+  );
+};
 
 const SimpleVisualization: React.FC<SimpleVisualizationProps> = ({
   components,
   relationships,
   onNodeClick,
+  onComponentClick,
   isProcessing = false,
   svgString,
 }) => {
   const svgContainerRef = useRef<HTMLDivElement>(null);
 
+  // New useEffect to log components on mount for debugging
+  useEffect(() => {
+    if (components && components.length > 0) {
+      logDebug(`Received ${components.length} components:`, components[0].id);
+    }
+  }, [components]);
+
   useEffect(() => {
     const container = svgContainerRef.current;
-    if (!svgString || !container || !onNodeClick) return;
+    if (!svgString || !container || !(onNodeClick || onComponentClick)) return;
+
+    // Log that we're attaching event handlers for debugging
+    logDebug("Setting up click handlers on SVG");
 
     const handleSvgClick = (event: MouseEvent) => {
-      let targetElement = event.target as SVGElement | null;
-      while (
-        targetElement &&
-        targetElement.tagName !== "g" &&
-        targetElement.tagName !== "svg"
-      ) {
-        targetElement = targetElement.parentElement as SVGElement | null;
+      const target = event.target as Element;
+      logDebug(`SVG Element Clicked:`, target.outerHTML);
+
+      // Try to find the component group and extract data
+      const targetGroup = target.closest("g[data-component-id]");
+
+      if (targetGroup) {
+        // Try to get the embedded component data first
+        const embeddedDataStr = targetGroup.getAttribute("data-component-data");
+        if (embeddedDataStr) {
+          try {
+            // Parse the JSON data embedded in the SVG
+            const componentData = JSON.parse(embeddedDataStr);
+            logDebug("Found embedded component data:", componentData);
+
+            // If we have the direct component click handler, use it first
+            if (onComponentClick) {
+              logDebug("Directly passing component data to onComponentClick");
+              onComponentClick(componentData);
+              return;
+            }
+
+            // Fall back to ID-based callback if that's all we have
+            if (componentData.id && onNodeClick) {
+              logDebug("Using embedded component data - ID:", componentData.id);
+              onNodeClick(componentData.id);
+              return;
+            }
+          } catch (e) {
+            logDebug("Error parsing embedded component data:", e);
+          }
+        }
+
+        // Fallback to just the ID if embedded data isn't available
+        const componentId = targetGroup.getAttribute("data-component-id");
+        if (componentId && onNodeClick) {
+          logDebug(`Found component ID from group:`, componentId);
+          onNodeClick(componentId);
+          return;
+        }
       }
 
-      const componentId = targetElement?.getAttribute("data-component-id");
-      if (componentId) {
-        onNodeClick(componentId);
+      // If we get here, try other fallback methods
+      if (target.tagName === "rect" || target.tagName === "text") {
+        // Try to get ID from rect or other element attributes
+        const componentId =
+          target.getAttribute("data-id") ||
+          target.getAttribute("data-component-id") ||
+          target.id;
+
+        if (componentId) {
+          logDebug(`Found component ID from element attribute:`, componentId);
+          onNodeClick && onNodeClick(componentId);
+          return;
+        }
+
+        // Last resort: try to match by position
+        if (components.length > 0) {
+          const y = parseInt(target.getAttribute("y") || "0");
+          const verticalSpacing = 130; // Approximate spacing between components
+          const estimatedIndex = Math.floor(y / verticalSpacing);
+
+          if (estimatedIndex >= 0 && estimatedIndex < components.length) {
+            const componentId = components[estimatedIndex].id;
+            logDebug(`Matched component by position (y=${y}):`, componentId);
+            onNodeClick && onNodeClick(componentId);
+            return;
+          }
+        }
+      }
+
+      // Final fallback: use first component if available
+      if (components && components.length > 0) {
+        const componentId = components[0].id;
+        logDebug(
+          "No component ID found, using first component as fallback:",
+          componentId
+        );
+        onNodeClick && onNodeClick(componentId);
+      } else {
+        logDebug("Could not determine component ID from click");
       }
     };
 
     container.addEventListener("click", handleSvgClick);
 
     return () => {
-      container.removeEventListener("click", handleSvgClick);
+      if (container) {
+        container.removeEventListener("click", handleSvgClick);
+      }
     };
-  }, [svgString, onNodeClick]);
+  }, [svgString, onNodeClick, onComponentClick, components]);
 
   if (isProcessing) {
     return (
@@ -104,7 +195,23 @@ const SimpleVisualization: React.FC<SimpleVisualizationProps> = ({
                 ? "after:content-[''] after:absolute after:left-1/2 after:-bottom-8 after:h-8 after:w-0.5 after:bg-gray-300 after:-translate-x-1/2"
                 : ""
             }`}
-            onClick={() => onNodeClick && onNodeClick(component.id)}
+            onClick={() => {
+              // If we have the component click handler, use it directly
+              if (onComponentClick) {
+                logDebug(
+                  "Calling onComponentClick with component data:",
+                  component.name
+                );
+                onComponentClick(component);
+              } else if (onNodeClick) {
+                // Fall back to node click handler with component ID
+                logDebug(
+                  "Calling onNodeClick with component ID:",
+                  component.id
+                );
+                onNodeClick(component.id);
+              }
+            }}
           >
             <h3 className="font-bold text-center text-lg">{component.name}</h3>
             <p className="text-sm opacity-90 mt-2 text-center">

@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import json
 import re # Import regex module
+import html
 
 logger = logging.getLogger(__name__)
 
@@ -460,8 +461,23 @@ class VisualizationGenerator:
                 'bottom_center': (x + box_width / 2, y + box_height)
             }
 
-            # --- Wrap component elements in a group (<g>) with data-component-id --- 
-            svg_elements.append(f'<g data-component-id="{comp.id}" style="cursor: pointer;">')
+            # Create a JSON string of component data to embed in SVG
+            # Include only essential fields to keep it compact
+            component_data = {
+                "id": comp.id,
+                "name": comp.name,
+                "type": comp.type.value if hasattr(comp.type, 'value') else comp.type,
+                "description": comp.description,
+                "source_section": comp.source_section if hasattr(comp, 'source_section') else None,
+                "source_page": comp.source_page if hasattr(comp, 'source_page') else None,
+                "is_novel": is_novel
+            }
+            
+            # JSON-stringify and escape the data for embedding in SVG
+            component_data_str = html.escape(json.dumps(component_data))
+            
+            # Wrap component elements in a group (<g>) with data attributes
+            svg_elements.append(f'<g data-component-id="{comp.id}" data-component-data="{component_data_str}" style="cursor: pointer;">')
             
             # Rectangle with conditional novel styling
             svg_elements.append(
@@ -471,16 +487,17 @@ class VisualizationGenerator:
             
             # Add Novel label if applicable
             if is_novel:
-                 svg_elements.append(
+                svg_elements.append(
                     f'  <text x="{x + box_width - 10}" y="{y + 15}" font-family="Arial, sans-serif" font-size="10" text-anchor="end" fill="#b45309" font-weight="bold" pointer-events="none">Novel</text>'
-                 )
-
+                )
+            
             # Text - Name (Title)
             text_name = (comp.name[:30] + '...') if len(comp.name) > 33 else comp.name
             svg_elements.append(
                 f'  <text x="{x + box_width / 2}" y="{y + 25}" dy="0" \n'
                 f'      font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#333" pointer-events="none">{text_name}</text>'
             )
+            
             # Text - Description (Truncated)
             text_desc = comp.description or ""
             text_desc = (text_desc[:60] + '...') if len(text_desc) > 63 else text_desc
@@ -490,8 +507,7 @@ class VisualizationGenerator:
             )
             
             svg_elements.append('</g>') # Close the group
-            # --- End of group --- 
-
+            
         # Create relationship lines (using updated coords)
         for i in range(len(components) - 1):
             comp1_id = components[i].id

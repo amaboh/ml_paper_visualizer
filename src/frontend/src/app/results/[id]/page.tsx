@@ -310,6 +310,16 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
   // Fetch visualization data (including SVG)
   const fetchVisualizationData = async () => {
     try {
+      // First, make sure we have paperData with components
+      if (!paperData?.components) {
+        console.log("[fetchVisualizationData] Loading full paper data first");
+        const paperDataResponse = await fetch(`/api/papers/${id}`);
+        if (paperDataResponse.ok) {
+          const fullPaperData = await paperDataResponse.json();
+          setPaperData(fullPaperData);
+        }
+      }
+
       // Fetch D3 visualization data
       const d3Promise = fetch(`/api/visualization/${id}/d3`).then((res) =>
         res.ok ? res.json() : null
@@ -339,26 +349,86 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
     }
   };
 
+  // First add a handler for direct component data
+  const handleComponentClick = (componentData: ComponentData) => {
+    console.log(
+      `[handleComponentClick] Received direct component data:`,
+      componentData.name
+    );
+    setSelectedComponent(componentData);
+    setActiveTab("details");
+  };
+
   // Function to handle node click in the diagram
   const handleNodeClick = async (nodeId: string) => {
-    if (!paperData || !paperData.components) return;
+    console.log(`[handleNodeClick] Received nodeId: ${nodeId}`);
 
+    // Short-circuit: if we don't have paperData, we can't do anything
+    if (!paperData?.components || paperData.components.length === 0) {
+      console.log("[handleNodeClick] No components available in paperData");
+      return;
+    }
+
+    // Step 1: Try direct map lookup for exact match - fastest
+    const componentMap = new Map();
+    paperData.components.forEach((comp) => {
+      componentMap.set(comp.id, comp);
+    });
+
+    // Check for exact ID match first
+    if (componentMap.has(nodeId)) {
+      const component = componentMap.get(nodeId);
+      console.log("[handleNodeClick] Found exact ID match:", component.name);
+      setSelectedComponent(component);
+      setActiveTab("details");
+      return;
+    }
+
+    // Step 2: Try partial ID match (IDs might have been truncated or formatted differently)
+    for (const comp of paperData.components) {
+      // Check if either ID starts with the other
+      if (comp.id.startsWith(nodeId) || nodeId.startsWith(comp.id)) {
+        console.log("[handleNodeClick] Found partial ID match:", comp.name);
+        setSelectedComponent(comp);
+        setActiveTab("details");
+        return;
+      }
+    }
+
+    // Step 3: As fallback, use the first component if we have any
+    if (paperData.components.length > 0) {
+      const firstComponent = paperData.components[0];
+      console.log(
+        "[handleNodeClick] Using first component as fallback:",
+        firstComponent.name
+      );
+      setSelectedComponent(firstComponent);
+      setActiveTab("details");
+      return;
+    }
+
+    // If all else fails, only then try the API
     try {
+      console.log(
+        `[handleNodeClick] Last resort: API call for component ${nodeId}`
+      );
       const response = await fetch(`/api/papers/${id}/components/${nodeId}`);
+
       if (response.ok) {
         const componentData = await response.json();
+        console.log(
+          "[handleNodeClick] API returned component:",
+          componentData.name
+        );
         setSelectedComponent(componentData);
         setActiveTab("details");
       } else {
-        // Fallback to finding component by ID in the current data
-        const component = paperData.components.find((c) => c.id === nodeId);
-        if (component) {
-          setSelectedComponent(component);
-          setActiveTab("details");
-        }
+        console.log(
+          `[handleNodeClick] API call failed with status ${response.status}`
+        );
       }
     } catch (err) {
-      console.error("Error fetching component details:", err);
+      console.error("[handleNodeClick] Error with API call:", err);
     }
   };
 
@@ -707,6 +777,7 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
           components={paperData?.components || []}
           relationships={paperData?.relationships || []}
           onNodeClick={handleNodeClick}
+          onComponentClick={handleComponentClick}
         />
       );
     } else {
@@ -718,6 +789,7 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
             components={paperData?.components || []}
             relationships={paperData?.relationships || []}
             onNodeClick={handleNodeClick}
+            onComponentClick={handleComponentClick}
           />
         );
       }
@@ -727,6 +799,7 @@ export default function Results({ params }: ResultsProps): React.ReactNode {
             components={paperData.components}
             relationships={paperData.relationships || []}
             onNodeClick={handleNodeClick}
+            onComponentClick={handleComponentClick}
             isProcessing={isProcessing}
           />
         );
